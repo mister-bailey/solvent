@@ -5,3 +5,4 @@
 md/*/*.hdf5
 md/*/*.csv
 md/*/*.pdb
+md/*/slurm*

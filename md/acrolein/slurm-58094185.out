@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "run_from_smiles.py", line 3, in <module>
-    from openforcefield.topology import Molecule, Topology
-ModuleNotFoundError: No module named 'openforcefield'

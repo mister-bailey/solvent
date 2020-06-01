@@ -6,4 +6,4 @@
 #SBATCH -t 7200
 #SBATCH -J e3nn-MD_acrolein
 
-python run_from_smiles.py 'C(=O)C=C'
+python run_from_smiles.py 'C=CC=O'
