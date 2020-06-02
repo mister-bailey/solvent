@@ -12,14 +12,13 @@ os.environ["PATH"] += os.pathsep + os.path.expanduser("~") + "/sw/packmol"
 from openmoltools.packmol import pack_box
 
 logging.basicConfig(level=logging.INFO, filename="log.log", format='%(asctime)s %(name)-12s  %(message)s', datefmt='%m-%d %H:%M', filemode="w")
+
 logger = logging.getLogger(__name__)
 
-#### This script uses OpenMM to run molecular dynamics on a solute in a cube of solvent.
-
 #### USAGE:
-#### python run_from_smiles.py SMILES-CODE 
+#### python run_from_smiles.py SMILES-CODE
 
-#### Expects ``config.yml`` in the same directory.
+#### Expects ``mdconf.yml`` in the same directory.
  
 def run_md(molecule, solvent_name="chloroform", confId=0):
     """
@@ -147,7 +146,7 @@ def run_md(molecule, solvent_name="chloroform", confId=0):
  
 if __name__=="__main__":
     forcefield = ForceField("openff_unconstrained-1.2.0.offxml")
-    config = yaml.load(open("config.yml", "r"), yaml.Loader)
+    config = yaml.load(open("mdconf.yml", "r"), yaml.Loader)
     molecule = Molecule.from_smiles(sys.argv[1])
     molecule.generate_conformers()
 

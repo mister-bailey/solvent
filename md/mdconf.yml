@@ -1,8 +1,0 @@
-time_step: 0.5
-temperature: 300
-friction: 1
-pdb_freq: 100
-hdf5_freq: 100
-data_freq: 1
-num_steps: 2000000
-length: 20
