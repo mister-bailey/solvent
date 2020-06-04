@@ -33,6 +33,7 @@ def evaluate(model, dataloader, loss_fns, device, n_norm):
             output = model(data.x, data.edge_index,
                            data.edge_attr, n_norm=n_norm)
             for loss_fn in loss_fns:
+                assert loss_fn is not None, "loss_fn cannot be None"
                 loss = [loss_fn(output, data.y) for loss_fn in loss_fns]
                 loss = torch.stack(loss, dim=0)
             losses.append(loss)
