@@ -1,8 +1,0 @@
-time_step: 0.5
-temperature: 300
-friction: 1
-pdb_freq: 1000
-hdf5_freq: 1000
-data_freq: 1000
-num_steps: 200000000 # 200 million = 100 ns
-length: 20 # box side length
