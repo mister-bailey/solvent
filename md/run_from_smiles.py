@@ -111,9 +111,11 @@ def run_md(molecule, solvent_name="chloroform", confId=0):
     
     #### Set up the simulation 
     simulation = openmm.app.Simulation(omm_topology, system, integrator)
+    logger.info(f"Simulation object created.")
     simulation.context.setPositions(mdt_trajectory.openmm_positions(0))
+    logger.info(f"Positions loaded.")
 
-    pdb_reporter = openmm.app.PDBReporter('trj.pdb', config["pdb_freq"])
+#    pdb_reporter = openmm.app.PDBReporter('trj.pdb', config["pdb_freq"])
     hdf5_reporter = mdt.reporters.HDF5Reporter('trj.hdf5', config["hdf5_freq"])
     state_data_reporter = openmm.app.StateDataReporter(
         "data.csv",

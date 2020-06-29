@@ -20,24 +20,30 @@ logger.info(f"Writing to {new_path}_xxxx.gjf")
 config = yaml.load(open("config.yml", "r"), yaml.Loader)
 num_files = config["num_nmr_files"]
 
-def write(m, idx):
+def write(m, idx, time):
     assert isinstance(m, cctk.Molecule), "need a ``cctk`` molecule to write!"
     filename = f"{new_path}_{idx:04d}.gjf"
+
+    if config["footer"] == "None":
+        config["footer"] = None
+
     if not os.path.exists(filename):
         cctk.GaussianFile.write_molecule_to_file(
             f"{new_path}_{idx:04d}.gjf",
             m,
             link0={"nprocshared": 4, "mem": "3GB"},
-            route_card=config["route_card"]
-            footer=config["footer"]
+            route_card=config["route_card"],
+            footer=config["footer"],
+            title=f"MD frame from t={time} picoseconds",
         )
     else:
         cctk.GaussianFile.write_molecule_to_file(
             f"{new_path}_{idx:04d}.gjf",
             m,
             link0={"nprocshared": 4, "mem": "3GB"},
-            route_card=config["route_card"]
-            footer=config["footer"]
+            route_card=config["route_card"],
+            footer=config["footer"],
+            title=f"MD frame from t={time} picoseconds",
             append=True,
         )
 
@@ -45,18 +51,21 @@ def read(args):
     coords = args[0] * 10 # nm to Å
     atomic_numbers = args[1]
     length = args[2]
-
-    #### move first atom to middle and then move PBCs
-    coords += -1 * coords[0]
-    coords += length / 2    
-    coords = np.mod(coords, length)
+    frame_time = args[3] # need to keep track cuz ``imap`` is asynchronous but fast
 
     mol = cctk.Molecule(atomic_numbers, coords)
-    mol.assign_connectivity()
+    mol.assign_connectivity(periodic_boundary_conditions=np.array([length, length, length]))
+    mol.center_periodic(1, length)
 
     new_mol = mol.limit_solvent_shell(num_solvents=config["num_solvents"])
-    free_mol = mol.limit_solvent_shell(num_solvents=0)
-    return [new_mol, free_mol]
+    free_mol = new_mol.limit_solvent_shell(num_solvents=0)
+
+    if np.sum(new_mol.atomic_numbers) % 2 != 0:
+        print("NOT A GOOD JOB")
+        write(mol, 9999, 0)
+        write(new_mol, 9999, 0)
+        raise ValueError
+    return [new_mol, free_mol, frame_time]
 
 counter = 0
 idx = 1
@@ -64,7 +73,8 @@ idx = 1
 #### we multithread the file reading since it's SLOW
 pool = mp.Pool(processes=config["num_threads"])
 with h5py.File(hdf5_path, "r") as h5:
-    coords = h5["coordinates"]
+    coords = h5["coordinates"][:100000]
+    times = h5["time"][:100000]
     per_file = int(len(coords) / num_files)
     logger.info(f"Will write {num_files} files with {per_file} * 2 structures per file -- {len(coords)} * 2 structures in total")
 
@@ -76,16 +86,18 @@ with h5py.File(hdf5_path, "r") as h5:
     atomic_symbols = re.findall(r'"element": "(?P<element>[A-Z][a-z]?)"', topology_str)
     atomic_numbers = np.array(list(map(cctk.helper_functions.get_number, atomic_symbols)), dtype=np.int8)
 
-    args = [(c, atomic_numbers, length) for c in coords]
+    args = [(c, atomic_numbers, length, t) for c, t in zip(coords, times)]
 
     for i, mol_list in enumerate(tqdm.tqdm(pool.imap(read, args), total=len(coords))):
-        write(mol_list[0], idx)
-        write(mol_list[1], idx)
+        #### pass time for autocorrelation analysis
+        write(mol_list[0], idx, mol_list[2])
+        write(mol_list[1], idx, mol_list[2])
 
+        counter += 1
         if counter % per_file == 0:
             idx += 1
             counter = 1
         else:
-            counter += 1
+            pass
 
 logger.info("Finished writing files")

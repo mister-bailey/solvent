@@ -14,4 +14,4 @@ num_nmr_files: 2000
 num_threads: 16
 num_solvents: 10
 route_card: "#p b3lyp/cc-pvdz empiricaldispersion=gd3bj NMR pop=none int=finegrid nosymm"
-footer: None
+footer: ""

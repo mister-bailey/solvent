@@ -2,8 +2,12 @@
 .DS_Store
 .ipynb_checkpoints
 *.torch
+__pycache__/*
 
-md/*/*.hdf5
+md/*/
+md/*.hdf5
+md/*.txt
+md/*.csv
 md/*/*.csv
 md/*/*.pdb
 md/*/slurm*
