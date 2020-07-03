@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import torch 
 
-def show_radial_parameters(model):
+def show_radial_parameters(model, max_radius=None):
     radial_parameters={}
 
     for name, param in model.named_parameters():
@@ -13,7 +13,11 @@ def show_radial_parameters(model):
     radial_rms = radial_square_density.pow(.5)
 
     plt.figure()
-    plt.bar(range(len(radial_rms)),radial_rms)
+    if max_radius is not None:
+        x_coords = range(len(radial_rms))
+    else:
+        x_coords = [max_radius * x / len(radial_rms) for x in range(len(radial_rms))]
+    plt.bar(x_coords,radial_rms)
     plt.ylabel("RMS")
     plt.show()
 
