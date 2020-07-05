@@ -6,6 +6,7 @@ from copy import deepcopy
 import torch_geometric as tg
 import math
 from time import perf_counter
+import time
 
 class Stopwatch():
     def __init__(self, running=False):
