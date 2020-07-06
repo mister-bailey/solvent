@@ -1,3 +1,3 @@
 # Solvent
 
-calculating solvent shifts with Richard and Tess and Corin
+calculating solvent shifts with Richard and Tess and Corin and Michael
