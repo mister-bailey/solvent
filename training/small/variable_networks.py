@@ -22,8 +22,8 @@ class VariableParityNetwork(torch.nn.Module):
         modules = []
 
         Rs = Rs_in
-        if batch_norm:
-            modules.append(BatchNorm([(m,2 * l + 1) for (m,l,_) in Rs_in]))
+        #if batch_norm:
+        #    modules.append(BatchNorm([(m,2 * l + 1) for (m,l,_) in Rs_in]))
 
         for mul, lmax in zip(muls, lmaxes):
             scalars = [(mul, l, p) for mul, l, p in [(mul, 0, +1), (mul, 0, -1)] if rs.haslinearpath(Rs, l, p)]
@@ -70,8 +70,8 @@ class VariableParityNetwork(torch.nn.Module):
             kwargs['n_norm'] = N
 
         if self.batch_norm:
-            output = self.layers[0](output)
-            for (i,(conv, bn, act)) in enumerate(self.layers[1:-1]):
+            #output = self.layers[0](output)
+            for conv, bn, act in self.layers[:-1]:
                 output = conv(output, *args, **kwargs)
                 output = bn(output)
                 output = act(output)
