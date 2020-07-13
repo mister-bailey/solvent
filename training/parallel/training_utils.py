@@ -91,16 +91,21 @@ class DatasetSignal(Enum):
 # process that reads an hdf5 file and returns Molecules
 class DatasetReader(Process):
     def __init__(self, name, molecule_queue, hdf5_filenames,
-                 n_consumers, examples_to_process, dataset_reader_status_queue):
+                 n_consumers, examples_to_process, dataset_reader_state_dict):
         super().__init__(group=None, target=None, name=name)
         self.molecule_queue = molecule_queue   # where to place the generated Molecule objects
         self.hdf5_filenames = hdf5_filenames   # hdf5 files to process
         self.n_consumers = n_consumers         # this many STOP signals will be sent when finished
         self.examples_to_process = examples_to_process  # max number of examples to process
         self.examples_processed = 0            # how many examples have been processed so far
-        self.hdf5_file_list_index = 0          # which hdf5 file
-        self.hdf5_file_index = 0               # which example within the hdf5 file
-        self.dataset_reader_status_queue = dataset_reader_status_queue # to allow another reader to resume
+        self.dataset_reader_state_dict = dataset_reader_state_dict # to allow another reader to resume
+        if "hdf5_file_list_index" in dataset_reader_state_dict and \
+           "hdf5_file_index" in dataset_reader_state_dict:
+            self.hdf5_file_list_index = dataset_reader_state_dict["hdf5_file_list_index"]
+            self.hdf5_file_index = dataset_reader_state_dict["hdf5_file_index"]
+        else:
+            self.hdf5_file_list_index = 0          # which hdf5 file
+            self.hdf5_file_index = 0               # which example within the hdf5 file
 
     # process the data in all hdf5 files
     def run(self):
@@ -113,9 +118,8 @@ class DatasetReader(Process):
             should_break = self.read_hdf5(hdf5_filename)
             if should_break:
                 print("stopping")
-                if self.dataset_reader_status_queue is not None:
-                    current_state = (self.hdf5_file_list_index, self.hdf5_file_index)
-                    self.dataset_reader_status_queue.put(current_state)
+                self.dataset_reader_state_dict["hdf5_file_list_index"] = self.hdf5_file_list_index
+                self.dataset_reader_state_dict["hdf5_file_index"] = self.hdf5_file_index
                 break
             self.hdf5_file_list_index += 1
             self.hdf5_file_index = 0

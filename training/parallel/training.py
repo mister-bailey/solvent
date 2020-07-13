@@ -59,10 +59,10 @@ print()
 manager = Manager()
 molecule_queue = manager.Queue(molecule_queue_max_size)
 data_neighbors_queue = manager.Queue(data_neighbors_queue_max_size)
-dataset_reader_status_queue = manager.Queue()
+dataset_reader_state_dict= manager.dict()
 
 dataset_reader0 = DatasetReader("DatasetReader 0", molecule_queue, hdf5_filenames,
-                                n_molecule_processors, testing_size, dataset_reader_status_queue)
+                                n_molecule_processors, testing_size, dataset_reader_state_dict)
 dataset_reader0.start()
 
 # read in and process testing data directly to memory
@@ -105,11 +105,7 @@ print("-------------------------------------")
 
 # start processes that will process training data
 dataset_reader1 = DatasetReader("DatasetReader 1", molecule_queue, hdf5_filenames,
-                               n_molecule_processors, training_size, None)
-state = dataset_reader_status_queue.get()
-print(">>> state:", state)
-dataset_reader1.hdf5_file_list_index = state[0]
-dataset_reader1.hdf5_file_index = state[1]
+                               n_molecule_processors, training_size, dataset_reader_state_dict)
 print(dataset_reader1.hdf5_file_list_index, dataset_reader1.hdf5_file_index)
 dataset_reader1.start()
 
@@ -118,8 +114,6 @@ molecule_processors1 = [ MoleculeProcessor(f"MoleculeProcessor1 {i}", molecule_q
                          for i in range(n_molecule_processors) ]
 for molecule_processor in molecule_processors1:
     molecule_processor.start()
-
-
 
 # the actual training
 for epoch in range(n_epochs):
@@ -137,28 +131,36 @@ for epoch in range(n_epochs):
             if len(training_data_list) == 0:
                 break
             last_batch = True
+            print("last batch")
         else:
             # get the next training example
             print(f"stop_signals_received: {stop_signals_received}   queue empty: {data_neighbors_queue.empty()}")
             data_neighbors = data_neighbors_queue.get()
             if data_neighbors == DatasetSignal.STOP:
                 stop_signals_received += 1
-                print(f"training loop got a stop, stop_signals_recieved is now {stop_signals_received}")
-                continue
-            print()
-            print(data_neighbors)
-            print()
-            training_data_list.append(data_neighbors)
+                print(f"training loop got a stop, stop_signals_received is now {stop_signals_received}")
+            else:
+                print()
+                print(data_neighbors)
+                print()
+                training_data_list.append(data_neighbors)
 
         # if we have enough for a minibatch, train
         if len(training_data_list) == batch_size or last_batch:
             print("got enough for a batch")
-            if last_batch:
-                print("last batch")
+            time1 = time.time()
             data = tg.data.Batch.from_data_list(training_data_list)
+            time2 = time.time()
+            elapsed = time2-time1
+            print(f"batch took {elapsed:.3f} s to make")
             print(f"there are {len(training_data_list)} examples in this batch")
             training_data_list = []
             minibatches_processed += 1
-            print(f"epoch {epoch+1} minibatch {minibatches_processed}")
+            print(f"epoch {epoch+1} minibatch {minibatches_processed} is finished")
 
+        # stop if this is the last batch
+        if last_batch:
+            break
+
+print("all done")
 exit()
