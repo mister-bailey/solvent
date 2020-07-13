@@ -1,6 +1,6 @@
 print("loading standard modules...")
 import time
-from multiprocessing import Process, Manager
+from multiprocessing import Manager, Pool
 from glob import glob
 print("loading torch...")
 import torch
@@ -13,7 +13,7 @@ import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 print("loading training-specific libraries...")
 import training_config
-from training_utils import DatasetSignal, DatasetReader, MoleculeProcessor, Molecule
+from training_utils import DatasetSignal, DatasetReader, process_molecule, Molecule
 print("done loading modules.")
 
 ### read configuration values ###
@@ -57,21 +57,19 @@ print()
 # copies of DatasetSignal.STOP will be propagated through molecule_queue
 # and data_neighbors_queue to the training loop to signal an end to the epoch
 manager = Manager()
+example_queue = manager.Queue()  # request number of examples to process here, or call for RESTART
 molecule_queue = manager.Queue(molecule_queue_max_size)
 data_neighbors_queue = manager.Queue(data_neighbors_queue_max_size)
-dataset_reader_state_dict= manager.dict()
 
-dataset_reader0 = DatasetReader("DatasetReader 0", molecule_queue, hdf5_filenames,
-                                n_molecule_processors, testing_size, dataset_reader_state_dict)
-dataset_reader0.start()
+dataset_reader = DatasetReader("dataset_reader", example_queue, molecule_queue,
+                               hdf5_filenames, n_molecule_processors)
+example_queue.put((testing_size,True))  # (how many examples to process, whether to make Molecules)
+dataset_reader.start()
+
+molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
+                              (molecule_queue, data_neighbors_queue, max_radius, Rs_in, Rs_out))
 
 # read in and process testing data directly to memory
-molecule_processors0 = [ MoleculeProcessor(f"MoleculeProcessor0 {i}", molecule_queue, \
-                         data_neighbors_queue, max_radius, Rs_in, Rs_out) \
-                         for i in range(n_molecule_processors) ]
-for molecule_processor in molecule_processors0:
-    molecule_processor.start()
-
 testing_data_list = []
 stop_signals_received = 0
 while True:
@@ -104,20 +102,19 @@ print("-------------------------------------")
 ### training ###
 
 # start processes that will process training data
-dataset_reader1 = DatasetReader("DatasetReader 1", molecule_queue, hdf5_filenames,
-                               n_molecule_processors, training_size, dataset_reader_state_dict)
-print(dataset_reader1.hdf5_file_list_index, dataset_reader1.hdf5_file_index)
-dataset_reader1.start()
-
-molecule_processors1 = [ MoleculeProcessor(f"MoleculeProcessor1 {i}", molecule_queue, \
-                         data_neighbors_queue, max_radius, Rs_in, Rs_out) \
-                         for i in range(n_molecule_processors) ]
-for molecule_processor in molecule_processors1:
-    molecule_processor.start()
 
 # the actual training
 for epoch in range(n_epochs):
-    print(f"this is epoch {epoch+1}")
+    print(f"== this is epoch {epoch+1} ===")
+
+    # reset the counters for reading the input files
+    example_queue.put(DatasetSignal.RESTART)
+
+    # skip over the first testing_size examples
+    example_queue.put((testing_size, False))
+
+    # process the next training_size examples
+    example_queue.put((training_size, True))
 
     # iterate through all training examples
     stop_signals_received = 0
@@ -162,5 +159,9 @@ for epoch in range(n_epochs):
         if last_batch:
             break
 
+# clean up
+example_queue.put(DatasetSignal.STOP)
+molecule_processor_pool.close()
+molecule_processor_pool.terminate()
+molecule_processor_pool.join()
 print("all done")
-exit()
