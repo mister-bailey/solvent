@@ -2,7 +2,7 @@ if __name__ != '__main__':
     print("spawning process...")
 if __name__ == '__main__': print("loading standard modules...")
 import time
-from multiprocessing import Manager, Pool, freeze_support
+from multiprocessing import Manager, Pool, freeze_support, Lock #Value
 from glob import glob
 if __name__ == '__main__': print("loading torch...")
 import torch
@@ -15,7 +15,7 @@ import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
 import training_config
-from training_utils import DatasetSignal, DatasetReader, process_molecule, Molecule
+from training_utils import DatasetSignal, DatasetReader, process_molecule, Molecule, PipelineReporter
 if __name__ == '__main__': print("done loading modules.")
 
 ### read configuration values ###
@@ -65,8 +65,9 @@ def main():
     molecule_queue = manager.Queue(molecule_queue_max_size)
     data_neighbors_queue = manager.Queue(data_neighbors_queue_max_size)
 
+    pipeline_reporter = PipelineReporter()#(manager)
     dataset_reader = DatasetReader("dataset_reader", example_queue, molecule_queue,
-                                hdf5_filenames, n_molecule_processors)
+                                pipeline_reporter, hdf5_filenames)
     example_queue.put((testing_size,True))  # (how many examples to process, whether to make Molecules)
     dataset_reader.start()
 
@@ -75,19 +76,13 @@ def main():
 
     # read in and process testing data directly to memory
     testing_data_list = []
-    stop_signals_received = 0
-    while True:
-        if stop_signals_received == n_molecule_processors and data_neighbors_queue.empty():
-            assert len(testing_data_list) == testing_size, \
-                f"expected {testing_size} testing examples but got {len(testing_data_list)}"
-            break
 
+    while pipeline_reporter.any_coming():
         data_neighbors = data_neighbors_queue.get()
-        if data_neighbors == DatasetSignal.STOP:
-            stop_signals_received += 1
-            print("training got a stop, total stops now", stop_signals_received)
-            continue
+        pipeline_reporter.take_from_pipe()
         testing_data_list.append(data_neighbors)
+    assert len(testing_data_list) == testing_size, \
+        f"expected {testing_size} testing examples but got {len(testing_data_list)}"
 
     print("final")
     for i in testing_data_list:
@@ -121,33 +116,16 @@ def main():
         example_queue.put((training_size, True))
 
         # iterate through all training examples
-        stop_signals_received = 0
         minibatches_processed = 0
         training_data_list = []
-        while True:
-            # determine whether all training examples have been seen and trained on
-            last_batch = False
-            if stop_signals_received == n_molecule_processors and data_neighbors_queue.empty():
-                # if there are no more examples, stop
-                if len(training_data_list) == 0:
-                    break
-                last_batch = True
-                print("last batch")
-            else:
-                # get the next training example
-                print(f"stop_signals_received: {stop_signals_received}   queue empty: {data_neighbors_queue.empty()}")
+        while pipeline_reporter.any_coming():
+            while pipeline_reporter.any_coming() and len(training_data_list) < batch_size:
                 data_neighbors = data_neighbors_queue.get()
-                if data_neighbors == DatasetSignal.STOP:
-                    stop_signals_received += 1
-                    print(f"training loop got a stop, stop_signals_received is now {stop_signals_received}")
-                else:
-                    print()
-                    print(data_neighbors)
-                    print()
-                    training_data_list.append(data_neighbors)
-
-            # if we have enough for a minibatch, train
-            if len(training_data_list) == batch_size or last_batch:
+                pipeline_reporter.take_from_pipe()
+                training_data_list.append(data_neighbors)
+            # determine whether all training examples have been seen and trained on
+            
+            if len(training_data_list) > 0:
                 print("got enough for a batch")
                 time1 = time.time()
                 data = tg.data.Batch.from_data_list(training_data_list)
@@ -159,9 +137,7 @@ def main():
                 minibatches_processed += 1
                 print(f"epoch {epoch+1} minibatch {minibatches_processed} is finished")
 
-            # stop if this is the last batch
-            if last_batch:
-                break
+            
 
     # clean up
     example_queue.put(DatasetSignal.STOP)

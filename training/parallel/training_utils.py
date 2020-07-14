@@ -1,7 +1,7 @@
 from enum import Enum
 import re
 import ast
-from multiprocessing import Process
+from multiprocessing import Process, Lock, Semaphore, Value
 import numpy as np
 import h5py
 import torch
@@ -80,6 +80,71 @@ def str2array(s):
                  a[i][j] += -1
         return a
 
+# polls a lock/semaphore without acquiring it
+# returns: True if it was locked, False otherwise
+def locked(lock):
+    if lock.acquire(False):
+        lock.release()
+        return False
+    return True
+
+def set_semaphore(s, x):
+    if x and locked(s):
+        s.release()
+    elif (not x) and (not locked(s)):
+        s.acquire()
+
+class PipelineReporter():
+    def __init__(self, manager=None, active=True):
+        if manager is not None:
+            self.reporting = manager.Semaphore(0)
+            self.active = manager.Value('i',int(active))
+            self.in_pipe = manager.Value('i',0)
+        else:
+            self.reporting = Semaphore(0)
+            self.active = Value('i',int(active))
+            self.in_pipe = Value('i',0)
+        
+    def set_reporting(self, reporting=True):
+        set_semaphore(self.reporting, reporting)
+
+    def set_active(self):
+        with self.active.get_lock():
+            self.active.value = True
+        self.set_reporting()
+    
+    def set_inactive(self):
+        with self.active.get_lock():
+            self.active.value = False
+        self.set_reporting()
+
+    def get_report(self):
+        self.reporting.acquire()
+        self.reporting.release()
+        with self.active.get_lock():
+            return self.active.value
+
+    def add_to_pipe(self, n=1):
+        with self.in_pipe.get_lock():
+            self.in_pipe.value += n
+    
+    def take_from_pipe(self, n=1):
+        self.add_to_pipe(-n)
+
+    def num_in_pipe(self):
+        with self.in_pipe.get_lock():
+            return self.in_pipe.value
+
+    def any_in_pipe(self):
+        return self.num_in_pipe() > 0
+
+    def any_coming(self):
+        return self.get_report() or self.any_in_pipe()
+
+
+    
+
+
 class DatasetSignal(Enum):
     # a "poison pill" that signals to the final thread
     # that a phase of calculation is complete
@@ -93,27 +158,26 @@ class DatasetSignal(Enum):
 
 # process that reads an hdf5 file and returns Molecules
 class DatasetReader(Process):
-    def __init__(self, name, example_queue, molecule_queue,
-                       hdf5_filenames, n_consumers):
+    def __init__(self, name, example_queue, molecule_queue, pipeline_reporter,
+                       hdf5_filenames):
         super().__init__(group=None, target=None, name=name)
         self.example_queue = example_queue     # where to get work from
         self.molecule_queue = molecule_queue   # where to place the generated Molecule objects
+        self.pipeline_reporter = pipeline_reporter
         self.hdf5_filenames = hdf5_filenames   # hdf5 files to process
-        self.n_consumers = n_consumers         # this many STOP signals will be sent when finished
-        self.examples_processed = 0            # how many examples have been processed this round
         self.hdf5_file_list_index = 0          # which hdf5 file
         self.hdf5_file_index = 0               # which example within the hdf5 file
 
     # process the data in all hdf5 files
     def run(self):
-        assert len(self.hdf5_filenames) > 0, "nothing to process!"
+        assert len(self.hdf5_filenames) > 0, "no files to process!"
 
         while True:
-            self.examples_processed = 0       # how many examples have been processed this round
             work = self.example_queue.get()
             if work == DatasetSignal.RESTART:
                 self.hdf5_file_list_index = 0
                 self.hdf5_file_index = 0
+                self.pipeline_reporter.set_active()
                 continue
             elif work == DatasetSignal.STOP:
                 break
@@ -121,33 +185,35 @@ class DatasetReader(Process):
                 assert len(work) == 2, \
                        "expected 2-tuple: (examples_to_process, make_molecules)"
                 examples_to_process, make_molecules = work
-                self.examples_to_process = examples_to_process
+                self.read_examples(examples_to_process, make_molecules)
+                self.pipeline_reporter.set_inactive()
             else:
                 raise ValueError("unexpected work type")
 
-            # iterate through hdf5 filenames, picking up where we left off
-            while self.hdf5_file_list_index < len(self.hdf5_filenames):
-                hdf5_filename = self.hdf5_filenames[self.hdf5_file_list_index]
-                print(f"{self.name}: filename={hdf5_filename} file_list_index={self.hdf5_file_list_index} file_index={self.hdf5_file_index}")
-                should_break = self.read_hdf5(hdf5_filename, make_molecules)
-                if should_break:
-                    print("stopping")
-                    break
-                self.hdf5_file_list_index += 1
-                self.hdf5_file_index = 0
+    # iterate through hdf5 filenames, picking up where we left off
+    # returns: number of examples processed
+    def read_examples(self, examples_to_read, make_molecules=True, requested_jiggles=1):
+        examples_processed = 0       # how many examples have been processed this round
+        assert self.hdf5_file_list_index < len(self.hdf5_filenames), \
+            "request to read examples, but files are finished!"
+        while examples_processed < examples_to_read:
+            hdf5_filename = self.hdf5_filenames[self.hdf5_file_list_index]
+            print(f"{self.name}: filename={hdf5_filename} file_list_index={self.hdf5_file_list_index} file_index={self.hdf5_file_index}")
+            examples_processed += self.read_hdf5(hdf5_filename, examples_to_read - examples_processed, make_molecules, requested_jiggles)
+            if self.hdf5_file_list_index >= len(self.hdf5_filenames):
+                self.pipeline_reporter.set_inactive()
+                break
+                    
+        return examples_processed
 
-            # tell this many downstream consumers we are finished
-            if make_molecules:
-                for i in range(self.n_consumers):
-                    self.molecule_queue.put(DatasetSignal.STOP)
-                    print("DatasetReader sent a stop")
+
 
     # process the data in this hdf5 file
     # requested_jiggles examples will be taken: 1 (default) or listlike
     # make_molecules: boolean that tells us if we should make Molecules objects
     #                 or just skip over these records
-    # returns: if we should stop going through the file list
-    def read_hdf5(self, filename, make_molecules, requested_jiggles=1):
+    # returns: number of molecules read from this file
+    def read_hdf5(self, filename, examples_to_read, make_molecules, requested_jiggles=1):
         with h5py.File(filename, "r") as h5:
             h5_keys = []
             h5_values = []
@@ -158,7 +224,8 @@ class DatasetReader(Process):
                 h5_keys.append(key)
                 h5_values.append(value)
 
-            while self.hdf5_file_index < len(h5_keys):
+            examples_read = 0
+            while examples_read < examples_to_read and self.hdf5_file_index < len(h5_keys):
                 dataset_name = h5_keys[self.hdf5_file_index]
                 geometries_and_shieldings = h5_values[self.hdf5_file_index]
                 assert np.shape(geometries_and_shieldings)[2] == 4, "should be x,y,z,shielding"
@@ -166,14 +233,15 @@ class DatasetReader(Process):
                 dataset_number = dataset_name.split("_")[1]
 
                 if isinstance(requested_jiggles, int):
-                    jiggles = [ i for i in range(requested_jiggles) ]
+                    jiggles = range(requested_jiggles) #[ i for i in range(requested_jiggles) ]
                 elif isinstance(requested_jiggles, list):
                     jiggles = requested_jiggles
 
-                examples_needed = self.examples_to_process - self.examples_processed
-                assert examples_needed >= 1
-                if examples_needed < len(jiggles):
-                    jiggles = jiggles[:examples_needed]
+                jiggles_needed = examples_to_read - examples_read
+                assert jiggles_needed >= 1
+                if jiggles_needed < len(jiggles):
+                    jiggles = jiggles[:jiggles_needed]
+                # NOTE: We don't split a single molecule between different batches!
 
                 perturbed_geometries = geometries_and_shieldings[jiggles,:,:3]
                 perturbed_shieldings = geometries_and_shieldings[jiggles,:,3]
@@ -194,21 +262,28 @@ class DatasetReader(Process):
                     molecule = Molecule(dataset_number, atomic_symbols, symmetrical_atoms,
                                         perturbed_geometries, perturbed_shieldings)
                     self.molecule_queue.put(molecule)
+                    self.pipeline_reporter.set_active()
+                    self.pipeline_reporter.add_to_pipe(n_examples)
 
                 # update counters
-                self.examples_processed += n_examples
-                print(f"{self.name} has processed {self.examples_processed} examples")
+                examples_read += n_examples
+                #print(f"{self.name} has processed {self.examples_processed} examples")
                 self.hdf5_file_index += 1
 
                 # check whether we have processed enough
-                assert self.examples_processed <= self.examples_to_process,\
-                       f"have processed {self.examples_processed} examples but {self.examples_to_process} examples were requested"
-                if self.examples_processed == self.examples_to_process:
+                assert examples_read <= examples_to_read,\
+                       f"have processed {examples_read} examples but {examples_to_read} examples were requested"
+                if examples_read == examples_to_read:
                     # we should break
-                    return True
+                    return examples_read
+            if self.hdf5_file_index >= len(h5_keys):
+                self.hdf5_file_list_index += 1
+                self.hdf5_file_index = 0
+
+
 
         # we didn't reach the desired number of examples
-        return False
+        return examples_read
 
 # method that takes Molecules from a queue (molecule_queue) and places
 # DataNeighbors into another queue (data_neighbors_queue)
@@ -217,7 +292,7 @@ def process_molecule(molecule_queue, data_neighbors_queue, \
     while True:
         work = molecule_queue.get()
         if work == DatasetSignal.STOP:
-            data_neighbors_queue.put(DatasetSignal.STOP)
+            #data_neighbors_queue.put(DatasetSignal.STOP)
             continue
         assert isinstance(work, Molecule), \
                f"expected Molecule but got {type(work)} instead!"
