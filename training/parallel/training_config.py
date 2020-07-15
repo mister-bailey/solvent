@@ -21,7 +21,7 @@ testing_size = 1000
 training_size = 10000
 
 # number of concurrent processes that create DataNeighbors
-n_molecule_processors = 4
+n_molecule_processors = 8
 
 # maximum number of pending molecules
 molecule_queue_max_size = 1000

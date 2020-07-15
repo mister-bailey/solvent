@@ -18,6 +18,12 @@ import training_config
 from training_utils import DatasetSignal, DatasetReader, process_molecule, Molecule, PipelineReporter
 if __name__ == '__main__': print("done loading modules.")
 
+
+import resource
+rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+print(rlimit)
+resource.setrlimit(resource.RLIMIT_NOFILE, (100000, rlimit[1]))
+
 ### read configuration values ###
 
 all_elements = training_config.all_elements
