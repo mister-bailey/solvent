@@ -206,7 +206,7 @@ class DatasetReader(Process):
     # make_molecules: boolean that tells us if we should make Molecules objects
     #                 or just skip over these records
     # returns: number of molecules read from this file
-    def read_hdf5(self, filename, examples_to_read, make_molecules, requested_jiggles=1):
+    def read_hdf5(self, filename, examples_to_read, make_molecules, requested_jiggles=100):
         with h5py.File(filename, "r") as h5:
             h5_keys = []
             h5_values = []

@@ -140,6 +140,7 @@ def main():
     # clean up
     example_queue.put(DatasetSignal.STOP)
     molecule_processor_pool.close()
+    time.sleep(2)
     molecule_processor_pool.terminate()
     molecule_processor_pool.join()
     print("all done")

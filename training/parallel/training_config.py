@@ -17,11 +17,11 @@ assert len(hdf5_filenames) > 0, "no files found!"
 # the examples picked are strictly in the order they appear
 # in the hdf5, but iteration over the set might vary due
 # to concurrent processing
-testing_size = 100
-training_size = 100
+testing_size = 1000
+training_size = 10000
 
 # number of concurrent processes that create DataNeighbors
-n_molecule_processors = 1
+n_molecule_processors = 4
 
 # maximum number of pending molecules
 molecule_queue_max_size = 1000
