@@ -104,7 +104,7 @@ class PipelineReporter():
             self.reporting = Semaphore(0)
             self.active = Value('i',int(active))
             self.in_pipe = Value('i',0)
-        
+
     def set_reporting(self, reporting=True):
         set_semaphore(self.reporting, reporting)
 
@@ -112,7 +112,7 @@ class PipelineReporter():
         with self.active.get_lock():
             self.active.value = True
         self.set_reporting()
-    
+
     def set_inactive(self):
         with self.active.get_lock():
             self.active.value = False
@@ -127,7 +127,7 @@ class PipelineReporter():
     def add_to_pipe(self, n=1):
         with self.in_pipe.get_lock():
             self.in_pipe.value += n
-    
+
     def take_from_pipe(self, n=1):
         self.add_to_pipe(-n)
 
@@ -140,10 +140,6 @@ class PipelineReporter():
 
     def any_coming(self):
         return self.get_report() or self.any_in_pipe()
-
-
-    
-
 
 class DatasetSignal(Enum):
     # a "poison pill" that signals to the final thread
@@ -203,10 +199,7 @@ class DatasetReader(Process):
             if self.hdf5_file_list_index >= len(self.hdf5_filenames):
                 self.pipeline_reporter.set_inactive()
                 break
-                    
         return examples_processed
-
-
 
     # process the data in this hdf5 file
     # requested_jiggles examples will be taken: 1 (default) or listlike
@@ -233,7 +226,7 @@ class DatasetReader(Process):
                 dataset_number = dataset_name.split("_")[1]
 
                 if isinstance(requested_jiggles, int):
-                    jiggles = range(requested_jiggles) #[ i for i in range(requested_jiggles) ]
+                    jiggles = range(requested_jiggles)
                 elif isinstance(requested_jiggles, list):
                     jiggles = requested_jiggles
 
@@ -241,8 +234,8 @@ class DatasetReader(Process):
                 assert jiggles_needed >= 1
                 if jiggles_needed < len(jiggles):
                     jiggles = jiggles[:jiggles_needed]
-                # NOTE: We don't split a single molecule between different batches!
 
+                # NOTE: We don't split a single molecule between different batches!
                 perturbed_geometries = geometries_and_shieldings[jiggles,:,:3]
                 perturbed_shieldings = geometries_and_shieldings[jiggles,:,3]
                 n_examples = np.shape(perturbed_geometries)[0]
@@ -276,11 +269,10 @@ class DatasetReader(Process):
                 if examples_read == examples_to_read:
                     # we should break
                     return examples_read
+
             if self.hdf5_file_index >= len(h5_keys):
                 self.hdf5_file_list_index += 1
                 self.hdf5_file_index = 0
-
-
 
         # we didn't reach the desired number of examples
         return examples_read

@@ -38,7 +38,7 @@ learning_rate = training_config.learning_rate
 max_radius = training_config.max_radius
 n_norm = training_config.n_norm
 
-if __name__ == '__main__': 
+if __name__ == '__main__':
     ### initialize GPU ###
     print(f"\ncurrent cuda device: {torch.cuda.current_device()}")
     print(f"cuda device count:   {torch.cuda.device_count()}")
@@ -84,12 +84,12 @@ def main():
     assert len(testing_data_list) == testing_size, \
         f"expected {testing_size} testing examples but got {len(testing_data_list)}"
 
-    print("final")
-    for i in testing_data_list:
-        print(i)
+    #print("final")
+    #for i in testing_data_list:
+    #    print(i)
     testing_dataloader = tg.data.DataListLoader(testing_data_list, batch_size=batch_size, shuffle=False)
-    print("made testing data_loader")
-    print("-------------------------------------")
+    #print("made testing data_loader")
+    #print("-------------------------------------")
 
     ### model and optimizer ###
 
@@ -123,21 +123,19 @@ def main():
                 data_neighbors = data_neighbors_queue.get()
                 pipeline_reporter.take_from_pipe()
                 training_data_list.append(data_neighbors)
+
             # determine whether all training examples have been seen and trained on
-            
             if len(training_data_list) > 0:
-                print("got enough for a batch")
+                #print("got enough for a batch")
                 time1 = time.time()
                 data = tg.data.Batch.from_data_list(training_data_list)
                 time2 = time.time()
                 elapsed = time2-time1
                 print(f"batch took {elapsed:.3f} s to make")
-                print(f"there are {len(training_data_list)} examples in this batch")
+                #print(f"there are {len(training_data_list)} examples in this batch")
                 training_data_list = []
                 minibatches_processed += 1
-                print(f"epoch {epoch+1} minibatch {minibatches_processed} is finished")
-
-            
+                #print(f"epoch {epoch+1} minibatch {minibatches_processed} is finished")
 
     # clean up
     example_queue.put(DatasetSignal.STOP)
@@ -146,9 +144,6 @@ def main():
     molecule_processor_pool.join()
     print("all done")
 
-
 if __name__ == '__main__':
     freeze_support()
     main()
-
-
