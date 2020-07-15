@@ -1,3 +1,4 @@
+import training_config
 if __name__ != '__main__':
     print("spawning process...")
 if __name__ == '__main__': print("loading standard modules...")
@@ -14,7 +15,6 @@ import e3nn
 import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
-import training_config
 from training_utils import DatasetSignal, DatasetReader, process_molecule, Molecule, PipelineReporter
 if __name__ == '__main__': print("done loading modules.")
 
