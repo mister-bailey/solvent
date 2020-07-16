@@ -3,7 +3,7 @@ if __name__ != '__main__':
     print("spawning process...")
 if __name__ == '__main__': print("loading standard modules...")
 import time
-from multiprocessing import Manager, Pool, freeze_support, Lock #Value
+from torch.multiprocessing import freeze_support
 from glob import glob
 if __name__ == '__main__': print("loading torch...")
 import torch
@@ -15,14 +15,15 @@ import e3nn
 import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
-from training_utils import DatasetSignal, DatasetReader, process_molecule, Molecule, PipelineReporter
+from training_utils import Pipeline, Molecule
 if __name__ == '__main__': print("done loading modules.")
 
-
-import resource
-rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
-print(rlimit)
-resource.setrlimit(resource.RLIMIT_NOFILE, (100000, rlimit[1]))
+import os
+if os.name == 'posix':
+    import resource
+    rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    print(f"resource.RLIMIT_NOFILE = {rlimit}")
+    resource.setrlimit(resource.RLIMIT_NOFILE, (100000, rlimit[1]))
 
 ### read configuration values ###
 
@@ -66,27 +67,16 @@ def main():
     # when all examples have been exhausted, n_molecule_processors
     # copies of DatasetSignal.STOP will be propagated through molecule_queue
     # and data_neighbors_queue to the training loop to signal an end to the epoch
-    manager = Manager()
-    example_queue = manager.Queue()  # request number of examples to process here, or call for RESTART
-    molecule_queue = manager.Queue(molecule_queue_max_size)
-    data_neighbors_queue = manager.Queue(data_neighbors_queue_max_size)
 
-    pipeline_reporter = PipelineReporter()#(manager)
-    dataset_reader = DatasetReader("dataset_reader", example_queue, molecule_queue,
-                                pipeline_reporter, hdf5_filenames)
-    example_queue.put((testing_size,True))  # (how many examples to process, whether to make Molecules)
-    dataset_reader.start()
-
-    molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
-                                (molecule_queue, data_neighbors_queue, max_radius, Rs_in, Rs_out))
+    pipeline = Pipeline(hdf5_filenames, n_molecule_processors, max_radius, Rs_in, Rs_out, molecule_queue_max_size)
+    pipeline.start_reading(testing_size,True)  # (how many examples to process, whether to make Molecules)
 
     # read in and process testing data directly to memory
     testing_data_list = []
 
-    while pipeline_reporter.any_coming():
-        data_neighbors = data_neighbors_queue.get()
-        pipeline_reporter.take_from_pipe()
-        testing_data_list.append(data_neighbors)
+    while pipeline.any_coming():
+        data_neighbor = pipeline.get_data_neighbor()
+        testing_data_list.append(data_neighbor)
     assert len(testing_data_list) == testing_size, \
         f"expected {testing_size} testing examples but got {len(testing_data_list)}"
 
@@ -113,21 +103,21 @@ def main():
         print(f"== this is epoch {epoch+1} ===")
 
         # reset the counters for reading the input files
-        example_queue.put(DatasetSignal.RESTART)
+        pipeline.restart()
 
         # skip over the first testing_size examples
-        example_queue.put((testing_size, False))
+        pipeline.start_reading(testing_size, False)
+        pipeline.wait_till_done()
 
         # process the next training_size examples
-        example_queue.put((training_size, True))
+        pipeline.start_reading(training_size, True)
 
         # iterate through all training examples
         minibatches_processed = 0
         training_data_list = []
-        while pipeline_reporter.any_coming():
-            while pipeline_reporter.any_coming() and len(training_data_list) < batch_size:
-                data_neighbors = data_neighbors_queue.get()
-                pipeline_reporter.take_from_pipe()
+        while pipeline.any_coming():
+            while pipeline.any_coming() and len(training_data_list) < batch_size:
+                data_neighbors = pipeline.get_data_neighbor()
                 training_data_list.append(data_neighbors)
 
             # determine whether all training examples have been seen and trained on
@@ -138,17 +128,14 @@ def main():
                 time2 = time.time()
                 elapsed = time2-time1
                 print(f"batch took {elapsed:.3f} s to make")
-                #print(f"there are {len(training_data_list)} examples in this batch")
+                print(f"there are {len(training_data_list)} examples in this batch")
                 training_data_list = []
                 minibatches_processed += 1
                 #print(f"epoch {epoch+1} minibatch {minibatches_processed} is finished")
 
     # clean up
-    example_queue.put(DatasetSignal.STOP)
-    molecule_processor_pool.close()
-    time.sleep(2)
-    molecule_processor_pool.terminate()
-    molecule_processor_pool.join()
+    pipeline.close()
+
     print("all done")
 
 if __name__ == '__main__':

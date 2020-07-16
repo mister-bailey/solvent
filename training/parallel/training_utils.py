@@ -1,7 +1,8 @@
 from enum import Enum
 import re
 import ast
-from multiprocessing import Process, Lock, Semaphore, Value
+from torch.multiprocessing import Process, Lock, Semaphore, Value, Queue, Manager, Pool
+import time
 import numpy as np
 import h5py
 import torch
@@ -81,65 +82,110 @@ def str2array(s):
         return a
 
 # polls a lock/semaphore without acquiring it
-# returns: True if it was locked, False otherwise
-def locked(lock):
-    if lock.acquire(False):
-        lock.release()
-        return False
-    return True
+# returns: True if it was positive, False otherwise
+def check_semaphore(s):
+    if s.acquire(False):
+        s.release()
+        return True
+    return False
 
 def set_semaphore(s, x):
-    if x and locked(s):
+    if x and not check_semaphore(s):
         s.release()
-    elif (not x) and (not locked(s)):
+    elif (not x) and check_semaphore(s):
         s.acquire()
 
-class PipelineReporter():
-    def __init__(self, manager=None, active=True):
-        if manager is not None:
-            self.reporting = manager.Semaphore(0)
-            self.active = manager.Value('i',int(active))
-            self.in_pipe = manager.Value('i',0)
-        else:
-            self.reporting = Semaphore(0)
-            self.active = Value('i',int(active))
-            self.in_pipe = Value('i',0)
+def wait_semaphore(s):
+    s.acquire()
+    s.release()
 
-    def set_reporting(self, reporting=True):
-        set_semaphore(self.reporting, reporting)
+class Pipeline():
+    def __init__(self, hdf5_filenames, n_molecule_processors, max_radius, Rs_in, Rs_out, max_size=None, manager=None):
+        if manager is None:
+            manager = Manager()
+        #self.manager = manager
+        self.command_queue = manager.Queue(max_size)
+        self.molecule_queue = manager.Queue(max_size)
+        self.data_neighbors_queue = manager.Queue(max_size)
+        self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
+                (self, max_radius, Rs_in, Rs_out))
+        self.dataset_reader = DatasetReader("dataset_reader", self, hdf5_filenames)
 
-    def set_active(self):
-        with self.active.get_lock():
-            self.active.value = True
-        self.set_reporting()
+        self.knows = Semaphore(0) # > 0 if we know if any are coming
+        self.finished_reading = Lock() # locked if we're still reading from file
+        self.in_pipe = Value('i',0) # number of molecules that have been sent to the pool
 
-    def set_inactive(self):
-        with self.active.get_lock():
-            self.active.value = False
-        self.set_reporting()
+        self.dataset_reader.start()
 
-    def get_report(self):
-        self.reporting.acquire()
-        self.reporting.release()
-        with self.active.get_lock():
-            return self.active.value
+    def __getstate__(self):
+        self_dict = self.__dict__.copy()
+        self_dict['molecule_processor_pool'] = None
+        return self_dict          
 
-    def add_to_pipe(self, n=1):
+    # methods for pipeline user/consumer:
+    def start_reading(self, examples_to_read, make_molecules=True):
+        #print("Start reading...")
+        assert check_semaphore(self.finished_reading), "Tried to start reading file, but already reading!"
         with self.in_pipe.get_lock():
-            self.in_pipe.value += n
+            assert self.in_pipe.value == 0, "Tried to start reading, but examples already in pipe!"
+        set_semaphore(self.finished_reading, False)
+        set_semaphore(self.knows, False)
+        #print(f"Issuing command: ({examples_to_read}, {make_molecules})")
+        self.command_queue.put((examples_to_read, make_molecules))
+    
+    def wait_till_done(self):
+        wait_semaphore(self.knows)
+        wait_semaphore(self.finished_reading)
+        assert not self.any_coming(), "Pipeline consumer is waiting on pipeline, but not getting from pipe!"
 
-    def take_from_pipe(self, n=1):
-        self.add_to_pipe(-n)
+    def restart(self):
+        assert not self.any_coming() , "Tried to restart pipeline before it was empty!"
+        self.command_queue.put(DatasetSignal.RESTART)
+        # What to do if things are still in the pipe???
 
-    def num_in_pipe(self):
+    def any_coming(self): # returns True if at least one example is coming
+        wait_semaphore(self.knows)
         with self.in_pipe.get_lock():
-            return self.in_pipe.value
+            return self.in_pipe.value > 0
 
-    def any_in_pipe(self):
-        return self.num_in_pipe() > 0
+    def get_data_neighbor(self, timeout=None):
+        assert self.any_coming(), "Tried to get an example from an empty pipeline!"
+        x = self.data_neighbors_queue.get(True, timeout)
+        with self.in_pipe.get_lock():
+            self.in_pipe.value -= 1
+            if self.in_pipe.value == 0 and not check_semaphore(self.finished_reading):
+                set_semaphore(self.knows, False)
+            return x
+    
+    def close(self):
+        self.command_queue.put(DatasetSignal.STOP)
+        self.molecule_processor_pool.close()
+        time.sleep(2)
+        self.molecule_processor_pool.terminate()
+        self.molecule_processor_pool.join()
 
-    def any_coming(self):
-        return self.get_report() or self.any_in_pipe()
+    # methods for DatasetReader:
+    def get_command(self):
+        return self.command_queue.get()
+
+    def put_molecule(self, m):
+        self.molecule_queue.put(m)
+        with self.in_pipe.get_lock():
+            self.in_pipe.value += 1
+            set_semaphore(self.knows, True)
+    
+    def set_finished_reading(self): # !!! Call only after you've put the molecules !!!
+        set_semaphore(self.finished_reading, True)
+        set_semaphore(self.knows, True)
+
+    # methods for molecule processors:
+    def get_molecule(self):
+        return self.molecule_queue.get()
+
+    def put_data_neighbor(self, x):
+        self.data_neighbors_queue.put(x)
+
+
 
 class DatasetSignal(Enum):
     # a "poison pill" that signals to the final thread
@@ -154,12 +200,10 @@ class DatasetSignal(Enum):
 
 # process that reads an hdf5 file and returns Molecules
 class DatasetReader(Process):
-    def __init__(self, name, example_queue, molecule_queue, pipeline_reporter,
+    def __init__(self, name, pipeline,
                        hdf5_filenames):
         super().__init__(group=None, target=None, name=name)
-        self.example_queue = example_queue     # where to get work from
-        self.molecule_queue = molecule_queue   # where to place the generated Molecule objects
-        self.pipeline_reporter = pipeline_reporter
+        self.pipeline = pipeline
         self.hdf5_filenames = hdf5_filenames   # hdf5 files to process
         self.hdf5_file_list_index = 0          # which hdf5 file
         self.hdf5_file_index = 0               # which example within the hdf5 file
@@ -169,20 +213,20 @@ class DatasetReader(Process):
         assert len(self.hdf5_filenames) > 0, "no files to process!"
 
         while True:
-            work = self.example_queue.get()
-            if work == DatasetSignal.RESTART:
+            command = self.pipeline.get_command()
+            #print(f"Command: {command}")
+            if command == DatasetSignal.RESTART:
                 self.hdf5_file_list_index = 0
                 self.hdf5_file_index = 0
-                self.pipeline_reporter.set_active()
                 continue
-            elif work == DatasetSignal.STOP:
+            elif command == DatasetSignal.STOP:
                 break
-            elif isinstance(work, tuple):
-                assert len(work) == 2, \
+            elif isinstance(command, tuple):
+                assert len(command) == 2, \
                        "expected 2-tuple: (examples_to_process, make_molecules)"
-                examples_to_process, make_molecules = work
+                examples_to_process, make_molecules = command
                 self.read_examples(examples_to_process, make_molecules)
-                self.pipeline_reporter.set_inactive()
+                self.pipeline.set_finished_reading()
             else:
                 raise ValueError("unexpected work type")
 
@@ -197,7 +241,6 @@ class DatasetReader(Process):
             print(f"{self.name}: filename={hdf5_filename} file_list_index={self.hdf5_file_list_index} file_index={self.hdf5_file_index}")
             examples_processed += self.read_hdf5(hdf5_filename, examples_to_read - examples_processed, make_molecules, requested_jiggles)
             if self.hdf5_file_list_index >= len(self.hdf5_filenames):
-                self.pipeline_reporter.set_inactive()
                 break
         return examples_processed
 
@@ -254,9 +297,7 @@ class DatasetReader(Process):
                 if make_molecules:
                     molecule = Molecule(dataset_number, atomic_symbols, symmetrical_atoms,
                                         perturbed_geometries, perturbed_shieldings)
-                    self.molecule_queue.put(molecule)
-                    self.pipeline_reporter.set_active()
-                    self.pipeline_reporter.add_to_pipe(n_examples)
+                    self.pipeline.put_molecule(molecule)
 
                 # update counters
                 examples_read += n_examples
@@ -279,12 +320,12 @@ class DatasetReader(Process):
 
 # method that takes Molecules from a queue (molecule_queue) and places
 # DataNeighbors into another queue (data_neighbors_queue)
-def process_molecule(molecule_queue, data_neighbors_queue, \
-                     max_radius, Rs_in, Rs_out):
+def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
     while True:
-        work = molecule_queue.get()
+        work = pipeline.get_molecule()
         if work == DatasetSignal.STOP:
             #data_neighbors_queue.put(DatasetSignal.STOP)
+            assert False, "Deprecated DatasetSignal.STOP!"
             continue
         assert isinstance(work, Molecule), \
                f"expected Molecule but got {type(work)} instead!"
@@ -303,4 +344,4 @@ def process_molecule(molecule_queue, data_neighbors_queue, \
             data_neighbors.append(dn)
 
         for dn in data_neighbors:
-            data_neighbors_queue.put(dn)
+            pipeline.put_data_neighbor(dn) #pipeline.put_data_neighbor(dn)
