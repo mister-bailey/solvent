@@ -112,7 +112,8 @@ def main():
 
     testing_dataloader = tg.data.DataListLoader(testing_data_list, batch_size=batch_size, shuffle=False)
     time2 = time.time()
-    print(f"Done!  That took {time2-time1:.3f} s.")
+    print(f"Done!  That took {time2-time1:.3f} s.\n")
+    exit()
 
     ### model and optimizer ###
 
@@ -122,14 +123,14 @@ def main():
 
 
     ### training ###
-    print("Training!")
+    print("Training!\n")
 
     # start processes that will process training data
 
     # the actual training
     training_start_time = time.time()
     for epoch in range(n_epochs):
-        print(f"== this is epoch {epoch+1} ===")
+        print(f"== Epoch {epoch+1} ===")
 
         # reset the counters for reading the input files
         pipeline.restart()
