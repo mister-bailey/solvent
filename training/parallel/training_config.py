@@ -20,6 +20,9 @@ def parse_list(s, separator=",", func=None):
         return_list = list(map(func, return_list))
     return return_list
 
+# where to do the training
+device = config['general']['device']
+
 # all expected elements
 all_elements = parse_list(config['general']['all_elements'])
 assert len(all_elements) == len(set(all_elements)), "duplicate element"
@@ -34,6 +37,10 @@ assert len(relevant_elements) == len(set(relevant_elements)), "duplicate element
 # where the raw data are stored
 hdf5_filenames = list(sorted(glob(config['data']['hdf5_filenames'])))
 assert len(hdf5_filenames) > 0, "no files found!"
+
+# how many jiggles to get per file
+# this is not checked--requesting an invalid number will cause a runtime error
+jiggles_per_molecule = int(config['data']['jiggles_per_molecule'])
 
 # number of examples for test-train split
 # the examples picked are strictly in the order they appear
@@ -52,9 +59,9 @@ molecule_queue_max_size = int(config['data']['molecule_queue_max_size'])
 data_neighbors_queue_max_size = int(config['data']['data_neighbors_queue_max_size'])
 
 # model parameters
-load_from_file = config['model']['load_from_file']
-if load_from_file == 'None':
-    load_from_file = None
+load_model_from_file = config['model']['load_model_from_file']
+if load_model_from_file.lower() == "false":
+    load_model_from_file = False
 Rs_in = [ (n_elements, 0, 1) ]  # n_features, rank 0 tensor, even parity
 Rs_out = [ (1,0,1) ]            # one output per atom, rank 0 tensor, even parity
 muls = parse_list(config['model']['muls'], func=int)
@@ -66,6 +73,7 @@ number_of_basis = int(config['model']['number_of_basis'])
 # training parameters
 n_epochs = int(config['training']['n_epochs'])                        # number of epochs
 batch_size = int(config['training']['batch_size'])                    # minibatch sizes
+job_name = config['training']['job_name']                             # name of this training run
 checkpoint_interval = int(config['training']['checkpoint_interval'])  # save model every n minibatches
 learning_rate = float(config['training']['learning_rate'])            # learning rate
 

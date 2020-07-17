@@ -1,5 +1,7 @@
 from enum import Enum
 import re
+import math
+import os
 import ast
 from torch.multiprocessing import Process, Lock, Semaphore, Value, Queue, Manager, Pool
 import time
@@ -12,12 +14,20 @@ import e3nn
 import e3nn.point.data_helpers as dh
 import training_config
 
+### Code to Generate Molecules ###
+
 # all expected elements
 all_elements = training_config.all_elements
 n_elements = len(all_elements)
 
 # so we can normalize training data for the nuclei to be predicted
 relevant_elements = training_config.relevant_elements
+
+# cpu or gpu
+device = training_config.device
+
+# other parameters
+n_norm = training_config.n_norm
 
 # generates one-hots for a list of atomic_symbols
 def get_one_hots(atomic_symbols):
@@ -36,17 +46,6 @@ def get_weights(atomic_symbols, symmetrical_atoms):
         for i in l:
             weights[i] = weight
     return weights
-
-# mean-squared loss (not RMS!)
-def loss_function(output, data):
-    predictions = output
-    observations = data.y
-    weights = data.weights
-    normalization = weights.sum()
-    residuals = (predictions-observations)
-    loss = residuals.square() * weights
-    loss = loss.sum() / normalization
-    return loss, residuals
 
 # represents a molecule and all its jiggled training examples 
 class Molecule():
@@ -81,6 +80,8 @@ def str2array(s):
                  a[i][j] += -1
         return a
 
+### Parallel Preprocessing Code ###
+
 # polls a lock/semaphore without acquiring it
 # returns: True if it was positive, False otherwise
 def check_semaphore(s):
@@ -100,7 +101,8 @@ def wait_semaphore(s):
     s.release()
 
 class Pipeline():
-    def __init__(self, hdf5_filenames, n_molecule_processors, max_radius, Rs_in, Rs_out, max_size=None, manager=None):
+    def __init__(self, hdf5_filenames, requested_jiggles, n_molecule_processors,
+                 max_radius, Rs_in, Rs_out, max_size=None, manager=None):
         if manager is None:
             manager = Manager()
         #self.manager = manager
@@ -109,7 +111,7 @@ class Pipeline():
         self.data_neighbors_queue = manager.Queue(max_size)
         self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
                 (self, max_radius, Rs_in, Rs_out))
-        self.dataset_reader = DatasetReader("dataset_reader", self, hdf5_filenames)
+        self.dataset_reader = DatasetReader("dataset_reader", self, hdf5_filenames, requested_jiggles)
 
         self.knows = Semaphore(0) # > 0 if we know if any are coming
         self.finished_reading = Lock() # locked if we're still reading from file
@@ -120,7 +122,7 @@ class Pipeline():
     def __getstate__(self):
         self_dict = self.__dict__.copy()
         self_dict['molecule_processor_pool'] = None
-        return self_dict          
+        return self_dict
 
     # methods for pipeline user/consumer:
     def start_reading(self, examples_to_read, make_molecules=True):
@@ -132,7 +134,7 @@ class Pipeline():
         set_semaphore(self.knows, False)
         #print(f"Issuing command: ({examples_to_read}, {make_molecules})")
         self.command_queue.put((examples_to_read, make_molecules))
-    
+
     def wait_till_done(self):
         wait_semaphore(self.knows)
         wait_semaphore(self.finished_reading)
@@ -156,7 +158,7 @@ class Pipeline():
             if self.in_pipe.value == 0 and not check_semaphore(self.finished_reading):
                 set_semaphore(self.knows, False)
             return x
-    
+
     def close(self):
         self.command_queue.put(DatasetSignal.STOP)
         self.molecule_processor_pool.close()
@@ -173,7 +175,7 @@ class Pipeline():
         with self.in_pipe.get_lock():
             self.in_pipe.value += m.perturbed_geometries.shape[0]
             set_semaphore(self.knows, True)
-    
+
     def set_finished_reading(self): # !!! Call only after you've put the molecules !!!
         set_semaphore(self.finished_reading, True)
         set_semaphore(self.knows, True)
@@ -184,8 +186,6 @@ class Pipeline():
 
     def put_data_neighbor(self, x):
         self.data_neighbors_queue.put(x)
-
-
 
 class DatasetSignal(Enum):
     # a "poison pill" that signals to the final thread
@@ -201,12 +201,13 @@ class DatasetSignal(Enum):
 # process that reads an hdf5 file and returns Molecules
 class DatasetReader(Process):
     def __init__(self, name, pipeline,
-                       hdf5_filenames):
+                       hdf5_filenames, requested_jiggles):
         super().__init__(group=None, target=None, name=name)
         self.pipeline = pipeline
         self.hdf5_filenames = hdf5_filenames   # hdf5 files to process
         self.hdf5_file_list_index = 0          # which hdf5 file
         self.hdf5_file_index = 0               # which example within the hdf5 file
+        self.requested_jiggles = requested_jiggles  # how many jiggles per file
 
     # process the data in all hdf5 files
     def run(self):
@@ -225,14 +226,14 @@ class DatasetReader(Process):
                 assert len(command) == 2, \
                        "expected 2-tuple: (examples_to_process, make_molecules)"
                 examples_to_process, make_molecules = command
-                self.read_examples(examples_to_process, make_molecules)
+                self.read_examples(examples_to_process, make_molecules, self.requested_jiggles)
                 self.pipeline.set_finished_reading()
             else:
                 raise ValueError("unexpected work type")
 
     # iterate through hdf5 filenames, picking up where we left off
     # returns: number of examples processed
-    def read_examples(self, examples_to_read, make_molecules=True, requested_jiggles=1):
+    def read_examples(self, examples_to_read, make_molecules, requested_jiggles):
         examples_processed = 0       # how many examples have been processed this round
         assert self.hdf5_file_list_index < len(self.hdf5_filenames), \
             "request to read examples, but files are finished!"
@@ -249,7 +250,7 @@ class DatasetReader(Process):
     # make_molecules: boolean that tells us if we should make Molecules objects
     #                 or just skip over these records
     # returns: number of molecules read from this file
-    def read_hdf5(self, filename, examples_to_read, make_molecules, requested_jiggles=100):
+    def read_hdf5(self, filename, examples_to_read, make_molecules, requested_jiggles):
         with h5py.File(filename, "r") as h5:
             h5_keys = []
             h5_values = []
@@ -269,7 +270,7 @@ class DatasetReader(Process):
                 dataset_number = dataset_name.split("_")[1]
 
                 if isinstance(requested_jiggles, int):
-                    jiggles = range(requested_jiggles)
+                    jiggles = list(range(requested_jiggles))
                 elif isinstance(requested_jiggles, list):
                     jiggles = requested_jiggles
 
@@ -281,8 +282,7 @@ class DatasetReader(Process):
                 # NOTE: We don't split a single molecule between different batches!
                 perturbed_geometries = geometries_and_shieldings[jiggles,:,:3]
                 perturbed_shieldings = geometries_and_shieldings[jiggles,:,3]
-                n_examples = np.shape(perturbed_geometries)[0]
-                n_atoms = np.shape(perturbed_geometries)[1]
+                n_examples, n_atoms, _ = np.shape(perturbed_geometries)
 
                 atomic_symbols = h5.attrs[f"atomic_symbols_{dataset_number}"]
                 assert len(atomic_symbols) == n_atoms, \
@@ -298,9 +298,11 @@ class DatasetReader(Process):
                     molecule = Molecule(dataset_number, atomic_symbols, symmetrical_atoms,
                                         perturbed_geometries, perturbed_shieldings)
                     self.pipeline.put_molecule(molecule)
+                    print(f"put molecule {molecule.name}, n_examples={n_examples}")
 
                 # update counters
                 examples_read += n_examples
+                #print("examples_read:", examples_read)
                 #print(f"{self.name} has processed {self.examples_processed} examples")
                 self.hdf5_file_index += 1
 
@@ -322,16 +324,11 @@ class DatasetReader(Process):
 # DataNeighbors into another queue (data_neighbors_queue)
 def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
     while True:
-        work = pipeline.get_molecule()
-        if work == DatasetSignal.STOP:
-            #data_neighbors_queue.put(DatasetSignal.STOP)
-            assert False, "Deprecated DatasetSignal.STOP!"
-            continue
-        assert isinstance(work, Molecule), \
+        molecule = pipeline.get_molecule()
+        print(f"> got molecule {molecule.name}, n_examples={len(molecule.perturbed_geometries)}")
+        assert isinstance(molecule, Molecule), \
                f"expected Molecule but got {type(work)} instead!"
 
-        data_neighbors = []
-        molecule = work
         features = torch.tensor(molecule.features, dtype=torch.float64)
         weights = torch.tensor(molecule.weights, dtype=torch.float64)
         n_examples = len(molecule.perturbed_geometries)
@@ -340,8 +337,98 @@ def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
             s = torch.tensor(molecule.perturbed_shieldings[j], dtype=torch.float64).unsqueeze(-1)  # [1,N]
             dn = dh.DataNeighbors(x=features, Rs_in=Rs_in, pos=g, r_max=max_radius,
                                   self_interaction=True, name=molecule.name,
-                                  weights=weights, y=s, Rs_out = Rs_out)
-            data_neighbors.append(dn)
+                                  weights=weights, y=s, Rs_out=Rs_out)
+            pipeline.put_data_neighbor(dn)
 
-        for dn in data_neighbors:
-            pipeline.put_data_neighbor(dn) #pipeline.put_data_neighbor(dn)
+### Training Code ###
+
+# saves a model and optimizer to disk
+def checkpoint(model_kwargs, model, filename, optimizer):
+    model_dict = {
+        'state_dict' : model.state_dict(),
+        'model_kwargs' : model_kwargs,
+        'optimizer_state_dict' : optimizer.state_dict()
+    }
+    printf("Checkpointing to {filename}...", end='', flush=True)
+    torch.save(model_dict, filename)
+    file_size = os.path.getsize(filename) / 1E6
+    printf("occupies {file_size:.2f} MB.")
+
+# mean-squared loss (not RMS!)
+def loss_function(output, data):
+    predictions = output
+    observations = data.y
+    weights = data.weights
+    normalization = weights.sum()
+    residuals = (predictions-observations)
+    loss = residuals.square() * weights
+    loss = loss.sum() / normalization
+    return loss, residuals
+
+class TrainingHistory():
+    def __init__(self):
+        self.start_time = time.time()
+        self.minibatch_epochs = []   # which epoch each minibatch was computed in
+        self.minibatch_times = []    # times in seconds since start of training
+        self.minibatches_seen = []   # how many minibatches have been seen this epoch
+        self.minibatch_losses = []
+        self.testing_epochs = []     # which epoch the testing was computed in
+        self.testing_times = []      # times in seconds since start of training
+        self.testing_losses = []
+
+    def log_minibatch_loss(epoch, minibatches_seen, minibatch_loss):
+        elapsed_time = time.time() - self.start_time
+        self.minibatch_epochs.append(epoch)
+        self.minibatch_times.append(elapsed_time)
+        self.minibatches_seen.append(minibatches_seen)
+        self.minibatch_loss.append(minibatch_loss)
+
+    def log_testing_loss(epoch, testing_loss):
+        elapsed_time = time.time() - self.start_time
+        self.testing_epochs.append(epoch)
+
+    def print_training_status(moving_average_window=10):
+        pass
+
+# train a single batch
+# returns: minibatch loss, elapsed time
+def train_batch(data_list, model, optimizer, training_history, epoch, minibatches_seen):
+    # forward pass
+    batch = tg.data.Batch.from_data_list(data_list)
+    data.to(device)
+    output = model(data.x, data.edge_index, data.edge_attr, n_norm)
+    loss, _ = loss_function(output,data)
+
+    # backward pass
+    optimizer.zero_grade()
+    loss.backward()
+    optimizer.step()
+
+    # update results
+    minibatch_loss = np.sqrt(loss.item())  # RMSE
+    training_history.log_minibatch_loss(epoch, minibatches_seen, minibatch_loss)
+
+def compute_testing_loss(testing_dataloader, training_history, epoch):
+    n_minibatches = math.ceil
+    testing_loss = 0.0
+    n_testing_eaxmples_seen = 0
+    for minibatch_index, data_list in enumerate(testing_dataloader):
+        n_examples_this_minibatch = len(data)
+        data = tg.data.Batch.from_data_list(data_list)
+        data.to(device)
+
+        with torch.no_grad():
+            # run model
+            output = model(data.x, data.edge_index, data.edge_attr)
+
+            # compute MSE
+            loss, _ = loss_function(output_data)
+            minibatch_loss = np.sqrt(loss.item())
+            testing_loss = testing_loss * n_testing_examples_seen + \
+                           minibatch_loss * n_examples_this_minibatch
+            n_testing_examples_seen += n_examples_this_minibatch
+            testing_loss = testing_loss / n_testing_examples_seen
+
+        print(f"Epoch {epoch+1:<4d}    test {minibatch_index+1:5d} / {n_minibatches:5d}  loss = {testing_loss:12.3f}                    ", end="\r", flush=True)
+
+    training_history.log_testing_loss(epoch, testing_loss)
