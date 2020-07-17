@@ -100,7 +100,8 @@ def wait_semaphore(s):
     s.release()
 
 class Pipeline():
-    def __init__(self, hdf5_filenames, n_molecule_processors, max_radius, Rs_in, Rs_out, max_size=None, manager=None):
+    def __init__(self, hdf5_filenames, requested_jiggles, n_molecule_processors,
+                 max_radius, Rs_in, Rs_out, max_size=None, manager=None):
         if manager is None:
             manager = Manager()
         #self.manager = manager
@@ -109,7 +110,7 @@ class Pipeline():
         self.data_neighbors_queue = manager.Queue(max_size)
         self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
                 (self, max_radius, Rs_in, Rs_out))
-        self.dataset_reader = DatasetReader("dataset_reader", self, hdf5_filenames)
+        self.dataset_reader = DatasetReader("dataset_reader", self, hdf5_filenames, requested_jiggles)
 
         self.knows = Semaphore(0) # > 0 if we know if any are coming
         self.finished_reading = Lock() # locked if we're still reading from file
@@ -120,7 +121,7 @@ class Pipeline():
     def __getstate__(self):
         self_dict = self.__dict__.copy()
         self_dict['molecule_processor_pool'] = None
-        return self_dict          
+        return self_dict
 
     # methods for pipeline user/consumer:
     def start_reading(self, examples_to_read, make_molecules=True):
@@ -132,7 +133,7 @@ class Pipeline():
         set_semaphore(self.knows, False)
         #print(f"Issuing command: ({examples_to_read}, {make_molecules})")
         self.command_queue.put((examples_to_read, make_molecules))
-    
+
     def wait_till_done(self):
         wait_semaphore(self.knows)
         wait_semaphore(self.finished_reading)
@@ -156,7 +157,7 @@ class Pipeline():
             if self.in_pipe.value == 0 and not check_semaphore(self.finished_reading):
                 set_semaphore(self.knows, False)
             return x
-    
+
     def close(self):
         self.command_queue.put(DatasetSignal.STOP)
         self.molecule_processor_pool.close()
@@ -173,7 +174,7 @@ class Pipeline():
         with self.in_pipe.get_lock():
             self.in_pipe.value += 1
             set_semaphore(self.knows, True)
-    
+
     def set_finished_reading(self): # !!! Call only after you've put the molecules !!!
         set_semaphore(self.finished_reading, True)
         set_semaphore(self.knows, True)
@@ -184,8 +185,6 @@ class Pipeline():
 
     def put_data_neighbor(self, x):
         self.data_neighbors_queue.put(x)
-
-
 
 class DatasetSignal(Enum):
     # a "poison pill" that signals to the final thread
@@ -201,12 +200,13 @@ class DatasetSignal(Enum):
 # process that reads an hdf5 file and returns Molecules
 class DatasetReader(Process):
     def __init__(self, name, pipeline,
-                       hdf5_filenames):
+                       hdf5_filenames, requested_jiggles):
         super().__init__(group=None, target=None, name=name)
         self.pipeline = pipeline
         self.hdf5_filenames = hdf5_filenames   # hdf5 files to process
         self.hdf5_file_list_index = 0          # which hdf5 file
         self.hdf5_file_index = 0               # which example within the hdf5 file
+        self.requested_jiggles = requested_jiggles  # how many jiggles per file
 
     # process the data in all hdf5 files
     def run(self):
@@ -225,14 +225,14 @@ class DatasetReader(Process):
                 assert len(command) == 2, \
                        "expected 2-tuple: (examples_to_process, make_molecules)"
                 examples_to_process, make_molecules = command
-                self.read_examples(examples_to_process, make_molecules)
+                self.read_examples(examples_to_process, make_molecules, self.requested_jiggles)
                 self.pipeline.set_finished_reading()
             else:
                 raise ValueError("unexpected work type")
 
     # iterate through hdf5 filenames, picking up where we left off
     # returns: number of examples processed
-    def read_examples(self, examples_to_read, make_molecules=True, requested_jiggles=1):
+    def read_examples(self, examples_to_read, make_molecules, requested_jiggles):
         examples_processed = 0       # how many examples have been processed this round
         assert self.hdf5_file_list_index < len(self.hdf5_filenames), \
             "request to read examples, but files are finished!"
@@ -249,7 +249,7 @@ class DatasetReader(Process):
     # make_molecules: boolean that tells us if we should make Molecules objects
     #                 or just skip over these records
     # returns: number of molecules read from this file
-    def read_hdf5(self, filename, examples_to_read, make_molecules, requested_jiggles=100):
+    def read_hdf5(self, filename, examples_to_read, make_molecules, requested_jiggles):
         with h5py.File(filename, "r") as h5:
             h5_keys = []
             h5_values = []
@@ -269,7 +269,7 @@ class DatasetReader(Process):
                 dataset_number = dataset_name.split("_")[1]
 
                 if isinstance(requested_jiggles, int):
-                    jiggles = range(requested_jiggles)
+                    jiggles = list(range(requested_jiggles))
                 elif isinstance(requested_jiggles, list):
                     jiggles = requested_jiggles
 
@@ -281,8 +281,7 @@ class DatasetReader(Process):
                 # NOTE: We don't split a single molecule between different batches!
                 perturbed_geometries = geometries_and_shieldings[jiggles,:,:3]
                 perturbed_shieldings = geometries_and_shieldings[jiggles,:,3]
-                n_examples = np.shape(perturbed_geometries)[0]
-                n_atoms = np.shape(perturbed_geometries)[1]
+                n_examples, n_atoms, _ = np.shape(perturbed_geometries)
 
                 atomic_symbols = h5.attrs[f"atomic_symbols_{dataset_number}"]
                 assert len(atomic_symbols) == n_atoms, \
@@ -298,9 +297,11 @@ class DatasetReader(Process):
                     molecule = Molecule(dataset_number, atomic_symbols, symmetrical_atoms,
                                         perturbed_geometries, perturbed_shieldings)
                     self.pipeline.put_molecule(molecule)
+                    print(f"put molecule {molecule.name}, n_examples={n_examples}")
 
                 # update counters
                 examples_read += n_examples
+                #print("examples_read:", examples_read)
                 #print(f"{self.name} has processed {self.examples_processed} examples")
                 self.hdf5_file_index += 1
 
@@ -322,16 +323,11 @@ class DatasetReader(Process):
 # DataNeighbors into another queue (data_neighbors_queue)
 def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
     while True:
-        work = pipeline.get_molecule()
-        if work == DatasetSignal.STOP:
-            #data_neighbors_queue.put(DatasetSignal.STOP)
-            assert False, "Deprecated DatasetSignal.STOP!"
-            continue
-        assert isinstance(work, Molecule), \
+        molecule = pipeline.get_molecule()
+        print(f"> got molecule {molecule.name}, n_examples={len(molecule.perturbed_geometries)}")
+        assert isinstance(molecule, Molecule), \
                f"expected Molecule but got {type(work)} instead!"
 
-        data_neighbors = []
-        molecule = work
         features = torch.tensor(molecule.features, dtype=torch.float64)
         weights = torch.tensor(molecule.weights, dtype=torch.float64)
         n_examples = len(molecule.perturbed_geometries)
@@ -340,8 +336,5 @@ def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
             s = torch.tensor(molecule.perturbed_shieldings[j], dtype=torch.float64).unsqueeze(-1)  # [1,N]
             dn = dh.DataNeighbors(x=features, Rs_in=Rs_in, pos=g, r_max=max_radius,
                                   self_interaction=True, name=molecule.name,
-                                  weights=weights, y=s, Rs_out = Rs_out)
-            data_neighbors.append(dn)
-
-        for dn in data_neighbors:
-            pipeline.put_data_neighbor(dn) #pipeline.put_data_neighbor(dn)
+                                  weights=weights, y=s, Rs_out=Rs_out)
+            pipeline.put_data_neighbor(dn)

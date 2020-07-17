@@ -22,8 +22,9 @@ import os
 if os.name == 'posix':
     import resource
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
-    print(f"resource.RLIMIT_NOFILE = {rlimit}")
     resource.setrlimit(resource.RLIMIT_NOFILE, (100000, rlimit[1]))
+    rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    print(f"\nMaximum # of open file descriptors: {rlimit[0]} (soft limit) / {rlimit[1]} (hard limit)")
 
 ### read configuration values ###
 
@@ -31,6 +32,7 @@ all_elements = training_config.all_elements
 n_elements = len(all_elements)
 relevant_elements = training_config.relevant_elements
 hdf5_filenames = training_config.hdf5_filenames
+jiggles_per_molecule = training_config.jiggles_per_molecule
 testing_size = training_config.testing_size
 training_size = training_config.training_size
 n_molecule_processors = training_config.n_molecule_processors
@@ -46,7 +48,33 @@ max_radius = training_config.max_radius
 n_norm = training_config.n_norm
 
 if __name__ == '__main__':
+    # report configuration
+    print("\n=== Configuration ===\n")
+    print("all_elements:                     ", all_elements)
+    print("relevant_elements:                ", relevant_elements)
+    print("jiggles_per_molecule:             ", jiggles_per_molecule)
+    print("testing_size:                     ", testing_size)
+    print("training_size:                    ", training_size)
+    print("n_molecule_processors:            ", n_molecule_processors)
+    print("molecule_queue_max_size:          ", molecule_queue_max_size)
+    print("data_neighbors_queue_max_size:    ", data_neighbors_queue_max_size)
+    print("Rs_in:                            ", Rs_in)
+    print("Rs_out:                           ", Rs_out)
+    print("n_epochs:                         ", n_epochs)
+    print("batch_size:                       ", batch_size)
+    print("checkpoint_interval:              ", checkpoint_interval)
+    print("learning_rate:                    ", learning_rate)
+    print("max_radius:                       ", max_radius)
+    print("n_norm:                           ", n_norm)
+    print()
+
+    print(f"Will use training data from {len(hdf5_filenames)} files:")
+    for filename in hdf5_filenames:
+        print(f"   {filename}")
+    print()
+
     ### initialize GPU ###
+    print("GPU settings:")
     print(f"\ncurrent cuda device: {torch.cuda.current_device()}")
     print(f"cuda device count:   {torch.cuda.device_count()}")
     print(f"cuda device name:    {torch.cuda.get_device_name(0)}")
@@ -67,8 +95,10 @@ def main():
     # when all examples have been exhausted, n_molecule_processors
     # copies of DatasetSignal.STOP will be propagated through molecule_queue
     # and data_neighbors_queue to the training loop to signal an end to the epoch
-
-    pipeline = Pipeline(hdf5_filenames, n_molecule_processors, max_radius, Rs_in, Rs_out, molecule_queue_max_size)
+    print("Preprocessing testing data...")
+    time1 = time.time()
+    pipeline = Pipeline(hdf5_filenames, jiggles_per_molecule, n_molecule_processors,
+                        max_radius, Rs_in, Rs_out, molecule_queue_max_size)
     pipeline.start_reading(testing_size,True)  # (how many examples to process, whether to make Molecules)
 
     # read in and process testing data directly to memory
@@ -80,12 +110,9 @@ def main():
     assert len(testing_data_list) == testing_size, \
         f"expected {testing_size} testing examples but got {len(testing_data_list)}"
 
-    #print("final")
-    #for i in testing_data_list:
-    #    print(i)
     testing_dataloader = tg.data.DataListLoader(testing_data_list, batch_size=batch_size, shuffle=False)
-    #print("made testing data_loader")
-    #print("-------------------------------------")
+    time2 = time.time()
+    print(f"Done!  That took {time2-time1:.3f} s.")
 
     ### model and optimizer ###
 
@@ -95,10 +122,12 @@ def main():
 
 
     ### training ###
+    print("Training!")
 
     # start processes that will process training data
 
     # the actual training
+    training_start_time = time.time()
     for epoch in range(n_epochs):
         print(f"== this is epoch {epoch+1} ===")
 
@@ -115,6 +144,7 @@ def main():
         # iterate through all training examples
         minibatches_processed = 0
         training_data_list = []
+        time1 = time.time()
         while pipeline.any_coming():
             while pipeline.any_coming() and len(training_data_list) < batch_size:
                 data_neighbors = pipeline.get_data_neighbor()
@@ -122,18 +152,18 @@ def main():
 
             # determine whether all training examples have been seen and trained on
             if len(training_data_list) > 0:
-                #print("got enough for a batch")
-                time1 = time.time()
-                data = tg.data.Batch.from_data_list(training_data_list)
                 time2 = time.time()
-                elapsed = time2-time1
-                print(f"batch took {elapsed:.3f} s to make")
-                print(f"there are {len(training_data_list)} examples in this batch")
+                data = tg.data.Batch.from_data_list(training_data_list)
+                time3 = time.time()
+                print(f"{len(training_data_list)} examples took {time2-time1:.2f} s to preprocess and {time3-time2:.2f} s to batch")
                 training_data_list = []
                 minibatches_processed += 1
-                #print(f"epoch {epoch+1} minibatch {minibatches_processed} is finished")
+                time1 = time3
 
     # clean up
+    training_stop_time = time.time()
+    training_elapsed_time = training_stop_time - training_start_time
+    print(f"Training took {training_elapsed_time:.3f} s.")
     pipeline.close()
 
     print("all done")

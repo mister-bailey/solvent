@@ -35,6 +35,10 @@ assert len(relevant_elements) == len(set(relevant_elements)), "duplicate element
 hdf5_filenames = list(sorted(glob(config['data']['hdf5_filenames'])))
 assert len(hdf5_filenames) > 0, "no files found!"
 
+# how many jiggles to get per file
+# this is not checked--requesting an invalid number will cause a runtime error
+jiggles_per_molecule = int(config['data']['jiggles_per_molecule'])
+
 # number of examples for test-train split
 # the examples picked are strictly in the order they appear
 # in the hdf5, but iteration over the set might vary due
