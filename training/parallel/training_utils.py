@@ -171,7 +171,7 @@ class Pipeline():
     def put_molecule(self, m):
         self.molecule_queue.put(m)
         with self.in_pipe.get_lock():
-            self.in_pipe.value += 1
+            self.in_pipe.value += m.perturbed_geometries.shape[0]
             set_semaphore(self.knows, True)
     
     def set_finished_reading(self): # !!! Call only after you've put the molecules !!!
