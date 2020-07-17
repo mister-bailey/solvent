@@ -1,5 +1,7 @@
 from enum import Enum
 import re
+import math
+import os
 import ast
 from torch.multiprocessing import Process, Lock, Semaphore, Value, Queue, Manager, Pool
 import time
@@ -12,12 +14,20 @@ import e3nn
 import e3nn.point.data_helpers as dh
 import training_config
 
+### Code to Generate Molecules ###
+
 # all expected elements
 all_elements = training_config.all_elements
 n_elements = len(all_elements)
 
 # so we can normalize training data for the nuclei to be predicted
 relevant_elements = training_config.relevant_elements
+
+# cpu or gpu
+device = training_config.device
+
+# other parameters
+n_norm = training_config.n_norm
 
 # generates one-hots for a list of atomic_symbols
 def get_one_hots(atomic_symbols):
@@ -36,17 +46,6 @@ def get_weights(atomic_symbols, symmetrical_atoms):
         for i in l:
             weights[i] = weight
     return weights
-
-# mean-squared loss (not RMS!)
-def loss_function(output, data):
-    predictions = output
-    observations = data.y
-    weights = data.weights
-    normalization = weights.sum()
-    residuals = (predictions-observations)
-    loss = residuals.square() * weights
-    loss = loss.sum() / normalization
-    return loss, residuals
 
 # represents a molecule and all its jiggled training examples 
 class Molecule():
@@ -80,6 +79,8 @@ def str2array(s):
             for j, _ in enumerate(b):
                  a[i][j] += -1
         return a
+
+### Parallel Preprocessing Code ###
 
 # polls a lock/semaphore without acquiring it
 # returns: True if it was positive, False otherwise
@@ -338,3 +339,96 @@ def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
                                   self_interaction=True, name=molecule.name,
                                   weights=weights, y=s, Rs_out=Rs_out)
             pipeline.put_data_neighbor(dn)
+
+### Training Code ###
+
+# saves a model and optimizer to disk
+def checkpoint(model_kwargs, model, filename, optimizer):
+    model_dict = {
+        'state_dict' : model.state_dict(),
+        'model_kwargs' : model_kwargs,
+        'optimizer_state_dict' : optimizer.state_dict()
+    }
+    printf("Checkpointing to {filename}...", end='', flush=True)
+    torch.save(model_dict, filename)
+    file_size = os.path.getsize(filename) / 1E6
+    printf("occupies {file_size:.2f} MB.")
+
+# mean-squared loss (not RMS!)
+def loss_function(output, data):
+    predictions = output
+    observations = data.y
+    weights = data.weights
+    normalization = weights.sum()
+    residuals = (predictions-observations)
+    loss = residuals.square() * weights
+    loss = loss.sum() / normalization
+    return loss, residuals
+
+class TrainingHistory():
+    def __init__(self):
+        self.start_time = time.time()
+        self.minibatch_epochs = []   # which epoch each minibatch was computed in
+        self.minibatch_times = []    # times in seconds since start of training
+        self.minibatches_seen = []   # how many minibatches have been seen this epoch
+        self.minibatch_losses = []
+        self.testing_epochs = []     # which epoch the testing was computed in
+        self.testing_times = []      # times in seconds since start of training
+        self.testing_losses = []
+
+    def log_minibatch_loss(epoch, minibatches_seen, minibatch_loss):
+        elapsed_time = time.time() - self.start_time
+        self.minibatch_epochs.append(epoch)
+        self.minibatch_times.append(elapsed_time)
+        self.minibatches_seen.append(minibatches_seen)
+        self.minibatch_loss.append(minibatch_loss)
+
+    def log_testing_loss(epoch, testing_loss):
+        elapsed_time = time.time() - self.start_time
+        self.testing_epochs.append(epoch)
+
+    def print_training_status(moving_average_window=10):
+        pass
+
+# train a single batch
+# returns: minibatch loss, elapsed time
+def train_batch(data_list, model, optimizer, training_history, epoch, minibatches_seen):
+    # forward pass
+    batch = tg.data.Batch.from_data_list(data_list)
+    data.to(device)
+    output = model(data.x, data.edge_index, data.edge_attr, n_norm)
+    loss, _ = loss_function(output,data)
+
+    # backward pass
+    optimizer.zero_grade()
+    loss.backward()
+    optimizer.step()
+
+    # update results
+    minibatch_loss = np.sqrt(loss.item())  # RMSE
+    training_history.log_minibatch_loss(epoch, minibatches_seen, minibatch_loss)
+
+def compute_testing_loss(testing_dataloader, training_history, epoch):
+    n_minibatches = math.ceil
+    testing_loss = 0.0
+    n_testing_eaxmples_seen = 0
+    for minibatch_index, data_list in enumerate(testing_dataloader):
+        n_examples_this_minibatch = len(data)
+        data = tg.data.Batch.from_data_list(data_list)
+        data.to(device)
+
+        with torch.no_grad():
+            # run model
+            output = model(data.x, data.edge_index, data.edge_attr)
+
+            # compute MSE
+            loss, _ = loss_function(output_data)
+            minibatch_loss = np.sqrt(loss.item())
+            testing_loss = testing_loss * n_testing_examples_seen + \
+                           minibatch_loss * n_examples_this_minibatch
+            n_testing_examples_seen += n_examples_this_minibatch
+            testing_loss = testing_loss / n_testing_examples_seen
+
+        print(f"Epoch {epoch+1:<4d}    test {minibatch_index+1:5d} / {n_minibatches:5d}  loss = {testing_loss:12.3f}                    ", end="\r", flush=True)
+
+    training_history.log_testing_loss(epoch, testing_loss)

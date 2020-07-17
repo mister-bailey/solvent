@@ -30,6 +30,7 @@ if os.name == 'posix':
 
 ### read configuration values ###
 
+device = training_config.device
 all_elements = training_config.all_elements
 n_elements = len(all_elements)
 relevant_elements = training_config.relevant_elements
@@ -57,9 +58,8 @@ if __name__ == '__main__':
     print(f"cuda device name:    {torch.cuda.get_device_name(0)}")
     print(f"is cuda available?   {torch.cuda.is_available()}")
     print(f"cuda version:        {torch.version.cuda}")
-    #print(torch.cuda.memory_summary())
-    device = "cuda"
     print(f"device:              {device}")
+    #print(torch.cuda.memory_summary())
     temp_tensor = torch.rand(10).to(device)
     print("test tensor:")
     print(temp_tensor)
@@ -121,7 +121,7 @@ def main():
     for filename in hdf5_filenames:
         print(f"   {filename}")
 
-   ### prepare for training ###
+    ### prepare for training ###
 
     # setup processes that will read the training data
     # when all examples have been exhausted, n_molecule_processors
@@ -140,7 +140,7 @@ def main():
         data_neighbor = pipeline.get_data_neighbor()
         testing_data_list.append(data_neighbor)
     assert len(testing_data_list) == testing_size, \
-        f"expected {testing_size} testing examples but got {len(testing_data_list)}"
+        f">>>>> expected {testing_size} testing examples but got {len(testing_data_list)}"
 
     testing_dataloader = tg.data.DataListLoader(testing_data_list, batch_size=batch_size, shuffle=False)
     time2 = time.time()
@@ -148,7 +148,7 @@ def main():
 
     ### model and optimizer ###
 
-    # create model
+    # create model if it wasn't loaded from disk
     if model == None:
         model_kwargs = {
             'Rs_in' : Rs_in,

@@ -20,6 +20,9 @@ def parse_list(s, separator=",", func=None):
         return_list = list(map(func, return_list))
     return return_list
 
+# where to do the training
+device = config['general']['device']
+
 # all expected elements
 all_elements = parse_list(config['general']['all_elements'])
 assert len(all_elements) == len(set(all_elements)), "duplicate element"
