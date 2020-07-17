@@ -3,10 +3,10 @@ if __name__ != '__main__':
     print("spawning process...")
 if __name__ == '__main__': print("loading standard modules...")
 import time
-from torch.multiprocessing import freeze_support
 from glob import glob
 if __name__ == '__main__': print("loading torch...")
 import torch
+from torch.multiprocessing import freeze_support
 torch.set_default_dtype(torch.float64)
 if __name__ == '__main__': print("loading torch_geometric...")
 import torch_geometric as tg
@@ -16,6 +16,8 @@ import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
 from training_utils import Pipeline, Molecule
+from diagnostics import print_parameter_size, count_parameters, get_object_size
+from variable_networks import VariableParityNetwork
 if __name__ == '__main__': print("done loading modules.")
 
 import os
@@ -42,12 +44,56 @@ Rs_in = training_config.Rs_in
 Rs_out = training_config.Rs_out
 n_epochs = training_config.n_epochs
 batch_size = training_config.batch_size
+job_name = training_config.job_name
 checkpoint_interval = training_config.checkpoint_interval
-learning_rate = training_config.learning_rate
-max_radius = training_config.max_radius
+load_model_from_file = training_config.load_model_from_file
 n_norm = training_config.n_norm
 
 if __name__ == '__main__':
+    ### initialize GPU ###
+    print("\n=== GPU settings: ===\n")
+    print(f"current cuda device: {torch.cuda.current_device()}")
+    print(f"cuda device count:   {torch.cuda.device_count()}")
+    print(f"cuda device name:    {torch.cuda.get_device_name(0)}")
+    print(f"is cuda available?   {torch.cuda.is_available()}")
+    print(f"cuda version:        {torch.version.cuda}")
+    #print(torch.cuda.memory_summary())
+    device = "cuda"
+    print(f"device:              {device}")
+    temp_tensor = torch.rand(10).to(device)
+    print("test tensor:")
+    print(temp_tensor)
+    print()
+
+def main():
+    ### initialization ###
+
+    # load pre-existing model if requested
+    if load_model_from_file == False:
+        muls = training_config.muls
+        lmaxes = training_config.lmaxes
+        max_radius = training_config.max_radius
+        learning_rate = training_config.learning_rate
+        number_of_basis = training_config.number_of_basis
+        model = None
+        optimizer = None
+    else:
+        model_filename = load_model_from_file
+        if not os.path.exists(model_filename):
+            print(f"Could not find serialized model '{model_filename}'!")
+            exit()
+        print(f"Loading model from {model_filename}...")
+        model_dict = torch.load(model_filename)
+        model_kwargs = model_dict['model_kwargs']
+        muls = model_kwargs['muls']
+        lmaxes = model_kwargs['lmaxes']
+        model = VariableParityNetwork(convolution=Convolution, **model_kwargs)
+        model.load_state_dict(model_dict['state_dict'])
+        learning_rate = model_dict['optimizer_state_dict']['lr']
+        optimizer = torch.optim.Adam(model.parameters(), 0.1)
+        optimizer.load_state_dict(model_dict["optimizer_state_dict"])
+        number_of_basis = model_kwargs['number_of_basis']
+
     # report configuration
     print("\n=== Configuration ===\n")
     print("all_elements:                     ", all_elements)
@@ -64,38 +110,24 @@ if __name__ == '__main__':
     print("batch_size:                       ", batch_size)
     print("checkpoint_interval:              ", checkpoint_interval)
     print("learning_rate:                    ", learning_rate)
+    print("muls:                             ", muls)
+    print("lmaxes:                           ", lmaxes)
     print("max_radius:                       ", max_radius)
+    print("number_of_basis:                  ", number_of_basis)
     print("n_norm:                           ", n_norm)
     print()
 
     print(f"Will use training data from {len(hdf5_filenames)} files:")
     for filename in hdf5_filenames:
         print(f"   {filename}")
-    print()
 
-    ### initialize GPU ###
-    print("GPU settings:")
-    print(f"\ncurrent cuda device: {torch.cuda.current_device()}")
-    print(f"cuda device count:   {torch.cuda.device_count()}")
-    print(f"cuda device name:    {torch.cuda.get_device_name(0)}")
-    print(f"is cuda available?   {torch.cuda.is_available()}")
-    print(f"cuda version:        {torch.version.cuda}")
-    #print(torch.cuda.memory_summary())
-    device = "cuda"
-    print(f"device:              {device}")
-    temp_tensor = torch.rand(10).to(device)
-    print("test tensor:")
-    print(temp_tensor)
-    print()
-
-def main():
-    ### prepare for training ###
+   ### prepare for training ###
 
     # setup processes that will read the training data
     # when all examples have been exhausted, n_molecule_processors
     # copies of DatasetSignal.STOP will be propagated through molecule_queue
     # and data_neighbors_queue to the training loop to signal an end to the epoch
-    print("Preprocessing testing data...")
+    print("\n=== Preprocessing Testing Data ===\n")
     time1 = time.time()
     pipeline = Pipeline(hdf5_filenames, jiggles_per_molecule, n_molecule_processors,
                         max_radius, Rs_in, Rs_out, molecule_queue_max_size)
@@ -112,18 +144,41 @@ def main():
 
     testing_dataloader = tg.data.DataListLoader(testing_data_list, batch_size=batch_size, shuffle=False)
     time2 = time.time()
-    print(f"Done!  That took {time2-time1:.3f} s.\n")
-    exit()
+    print(f"Done preprocessing testing data!  That took {time2-time1:.3f} s.\n")
 
     ### model and optimizer ###
 
     # create model
+    if model == None:
+        model_kwargs = {
+            'Rs_in' : Rs_in,
+            'Rs_out' : Rs_out,
+            'muls' : muls,
+            'lmaxes' : lmaxes,
+            'max_radius' : max_radius,
+            'number_of_basis' : number_of_basis,
+        }
+        model = VariableParityNetwork(convolution=Convolution, batch_norm=True, **model_kwargs)
+        optimizer = torch.optim.Adam(model.parameters(), learning_rate)
 
-    # create optimizer
-
+    # print model details
+    print("=== Model and Optimizer ===\n")
+    model_size = get_object_size(model) / 1E6
+    optimizer_size = get_object_size(optimizer) / 1E6
+    print(f"Model occupies {model_size:.2f} MB and optimizer occupies {optimizer_size:.2f} MB.\n")
+    print("Model Details:")
+    print_parameter_size(model)
+    print()
+    print("Parameters per Layer:")
+    count_parameters(model)
+    print()
+    print("Optimizer:")
+    print(optimizer)
+    model.to(device)
+    exit()
 
     ### training ###
-    print("Training!\n")
+    print("\nTraining!\n")
 
     # start processes that will process training data
 

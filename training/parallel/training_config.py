@@ -56,9 +56,9 @@ molecule_queue_max_size = int(config['data']['molecule_queue_max_size'])
 data_neighbors_queue_max_size = int(config['data']['data_neighbors_queue_max_size'])
 
 # model parameters
-load_from_file = config['model']['load_from_file']
-if load_from_file == 'None':
-    load_from_file = None
+load_model_from_file = config['model']['load_model_from_file']
+if load_model_from_file.lower() == "false":
+    load_model_from_file = False
 Rs_in = [ (n_elements, 0, 1) ]  # n_features, rank 0 tensor, even parity
 Rs_out = [ (1,0,1) ]            # one output per atom, rank 0 tensor, even parity
 muls = parse_list(config['model']['muls'], func=int)
@@ -70,6 +70,7 @@ number_of_basis = int(config['model']['number_of_basis'])
 # training parameters
 n_epochs = int(config['training']['n_epochs'])                        # number of epochs
 batch_size = int(config['training']['batch_size'])                    # minibatch sizes
+job_name = config['training']['job_name']                             # name of this training run
 checkpoint_interval = int(config['training']['checkpoint_interval'])  # save model every n minibatches
 learning_rate = float(config['training']['learning_rate'])            # learning rate
 
