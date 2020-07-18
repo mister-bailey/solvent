@@ -4,6 +4,8 @@ if __name__ != '__main__':
 if __name__ == '__main__': print("loading standard modules...")
 import time
 from glob import glob
+import os
+import math
 if __name__ == '__main__': print("loading torch...")
 import torch
 from torch.multiprocessing import freeze_support
@@ -15,12 +17,11 @@ import e3nn
 import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
-from training_utils import Pipeline, Molecule
+from training_utils import Pipeline, Molecule, TrainingHistory, train_batch, compute_testing_loss
 from diagnostics import print_parameter_size, count_parameters, get_object_size
 from variable_networks import VariableParityNetwork
 if __name__ == '__main__': print("done loading modules.")
 
-import os
 if os.name == 'posix':
     import resource
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -45,8 +46,9 @@ Rs_in = training_config.Rs_in
 Rs_out = training_config.Rs_out
 n_epochs = training_config.n_epochs
 batch_size = training_config.batch_size
-job_name = training_config.job_name
+testing_interval = training_config.testing_interval
 checkpoint_interval = training_config.checkpoint_interval
+checkpoint_prefix = training_config.checkpoint_prefix
 load_model_from_file = training_config.load_model_from_file
 n_norm = training_config.n_norm
 
@@ -108,7 +110,9 @@ def main():
     print("Rs_out:                           ", Rs_out)
     print("n_epochs:                         ", n_epochs)
     print("batch_size:                       ", batch_size)
+    print("testing_interval:                 ", testing_interval)
     print("checkpoint_interval:              ", checkpoint_interval)
+    print("checkpoint_prefix:                ", checkpoint_prefix)
     print("learning_rate:                    ", learning_rate)
     print("muls:                             ", muls)
     print("lmaxes:                           ", lmaxes)
@@ -131,7 +135,10 @@ def main():
     time1 = time.time()
     pipeline = Pipeline(hdf5_filenames, jiggles_per_molecule, n_molecule_processors,
                         max_radius, Rs_in, Rs_out, molecule_queue_max_size)
-    pipeline.start_reading(testing_size,True)  # (how many examples to process, whether to make Molecules)
+    testing_molecules_dict = pipeline.testing_molecules_dict
+    pipeline.start_reading(testing_size,True,True)  # (how many examples to process,
+                                                    #  whether to make Molecules,
+                                                    #  whether to save the molecules to a dict)
 
     # read in and process testing data directly to memory
     testing_data_list = []
@@ -145,6 +152,7 @@ def main():
     testing_dataloader = tg.data.DataListLoader(testing_data_list, batch_size=batch_size, shuffle=False)
     time2 = time.time()
     print(f"Done preprocessing testing data!  That took {time2-time1:.3f} s.\n")
+    testing_molecules_dict = dict(testing_molecules_dict)
 
     ### model and optimizer ###
 
@@ -175,46 +183,54 @@ def main():
     print("Optimizer:")
     print(optimizer)
     model.to(device)
-    exit()
 
     ### training ###
-    print("\nTraining!\n")
-
-    # start processes that will process training data
 
     # the actual training
     training_start_time = time.time()
-    for epoch in range(n_epochs):
-        print(f"== Epoch {epoch+1} ===")
+    for epoch in range(1,n_epochs+1):
+        print(f"=== Epoch {epoch} ===")
 
         # reset the counters for reading the input files
         pipeline.restart()
 
         # skip over the first testing_size examples
-        pipeline.start_reading(testing_size, False)
+        pipeline.start_reading(testing_size, False, False)
         pipeline.wait_till_done()
 
         # process the next training_size examples
-        pipeline.start_reading(training_size, True)
+        pipeline.start_reading(training_size, True, False)
 
         # iterate through all training examples
-        minibatches_processed = 0
+        minibatches_seen = 0
+        checkpoint_index = 0
         training_data_list = []
-        time1 = time.time()
+        n_minibatches = math.ceil(training_size/batch_size)
+        training_history = TrainingHistory()
         while pipeline.any_coming():
+            time1 = time.time()
             while pipeline.any_coming() and len(training_data_list) < batch_size:
                 data_neighbors = pipeline.get_data_neighbor()
                 training_data_list.append(data_neighbors)
+            wait_time = time.time()-time1
 
             # determine whether all training examples have been seen and trained on
             if len(training_data_list) > 0:
-                time2 = time.time()
                 data = tg.data.Batch.from_data_list(training_data_list)
-                time3 = time.time()
-                print(f"{len(training_data_list)} examples took {time2-time1:.2f} s to preprocess and {time3-time2:.2f} s to batch")
+                train_batch(training_data_list, n_minibatches, model, optimizer,
+                            training_history, epoch, minibatches_seen)
+                print(f"\nwait time: {wait_time:.2f}  molecule_queue {pipeline.molecule_queue.qsize()}  data_neighbors_queue {pipeline.data_neighbors_queue.qsize()}")
                 training_data_list = []
-                minibatches_processed += 1
-                time1 = time3
+                minibatches_seen += 1
+
+                #if minibatches_seen % testing_interval:
+                #    compute_testing_loss(testing_dataloader, training_history,
+                #                         epoch, testing_molecule_dict)
+
+                #if minibatches_seen % checkpoint_interval:
+                #    checkpoint_filename = f"{checkpoint_prefix}-epoch_{epoch}-chk_{checkpoint_index}.torch"
+                #    checkpoint(model_kwargs, model, checkpoint_filename, optimizer)
+                #    checkpoint_index += 1
 
     # clean up
     training_stop_time = time.time()

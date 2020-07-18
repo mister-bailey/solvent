@@ -73,7 +73,8 @@ number_of_basis = int(config['model']['number_of_basis'])
 # training parameters
 n_epochs = int(config['training']['n_epochs'])                        # number of epochs
 batch_size = int(config['training']['batch_size'])                    # minibatch sizes
-job_name = config['training']['job_name']                             # name of this training run
+testing_interval = int(config['training']['testing_interval'])        # compute testing loss every n minibatches
 checkpoint_interval = int(config['training']['checkpoint_interval'])  # save model every n minibatches
+checkpoint_prefix = config['training']['checkpoint_prefix']           # save checkpoints to files starting with this
 learning_rate = float(config['training']['learning_rate'])            # learning rate
 
