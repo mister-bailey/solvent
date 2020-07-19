@@ -66,7 +66,6 @@ if __name__ == '__main__':
     temp_tensor = torch.rand(10).to(device)
     print("test tensor:")
     print(temp_tensor)
-    print()
 
 def main():
     ### initialization ###
@@ -133,6 +132,8 @@ def main():
     # copies of DatasetSignal.STOP will be propagated through molecule_queue
     # and data_neighbors_queue to the training loop to signal an end to the epoch
     print("\n=== Preprocessing Testing Data ===\n")
+    print("Working...", end="\r", flush=True)
+
     time1 = time.time()
     pipeline = Pipeline(hdf5_filenames, jiggles_per_molecule, n_molecule_processors,
                         max_radius, Rs_in, Rs_out, molecule_queue_max_size)
@@ -174,9 +175,9 @@ def main():
     print("=== Model and Optimizer ===\n")
     model_size = get_object_size(model) / 1E6
     optimizer_size = get_object_size(optimizer) / 1E6
-    print(f"Model occupies {model_size:.2f} MB and optimizer occupies {optimizer_size:.2f} MB.\n")
-    print("Model Details:")
-    print_parameter_size(model)
+    print(f"Model occupies {model_size:.2f} MB and optimizer occupies {optimizer_size:.2f} MB.")
+    #print("Model Details:")
+    #print_parameter_size(model)
     print()
     print("Parameters per Layer:")
     count_parameters(model)
@@ -186,11 +187,13 @@ def main():
     model.to(device)
 
     ### training ###
+    print("\n=== Training ===")
 
     # the actual training
     training_history = TrainingHistory()
     for epoch in range(1,n_epochs+1):
-        print(f"=== Epoch {epoch} ===")
+        #print(f"=== Epoch {epoch} ===")
+        print()
 
         # reset the counters for reading the input files
         pipeline.restart()
@@ -213,18 +216,18 @@ def main():
                 data_neighbors = pipeline.get_data_neighbor()
                 training_data_list.append(data_neighbors)
             wait_time = time.time()-time1
+            #print(f"\nwait time: {wait_time:.2f}  molecule_queue {pipeline.molecule_queue.qsize()}  data_neighbors_queue {pipeline.data_neighbors_queue.qsize()}")
 
             # determine whether all training examples have been seen and trained on
             if len(training_data_list) > 0:
                 minibatches_seen += 1
                 train_batch(training_data_list, model, optimizer, training_history)
                 training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches)
-                print(f"\nwait time: {wait_time:.2f}  molecule_queue {pipeline.molecule_queue.qsize()}  data_neighbors_queue {pipeline.data_neighbors_queue.qsize()}")
                 training_data_list = []
 
-                #if minibatches_seen % testing_interval:
-                #    compute_testing_loss(testing_dataloader, training_history,
-                #                         epoch, testing_molecule_dict)
+                if minibatches_seen % testing_interval == 0:
+                    compute_testing_loss(model, testing_dataloader, training_history,
+                                         testing_molecules_dict, epoch, minibatches_seen)
 
                 #if minibatches_seen % checkpoint_interval:
                 #    checkpoint_filename = f"{checkpoint_prefix}-epoch_{epoch}-chk_{checkpoint_index}.torch"
@@ -234,7 +237,7 @@ def main():
     # clean up
     pipeline.close()
 
-    print("all done")
+    print("\nProgram complete.")
 
 if __name__ == '__main__':
     freeze_support()

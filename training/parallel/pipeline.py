@@ -246,7 +246,7 @@ class DatasetReader(Process):
             "request to read examples, but files are finished!"
         while examples_processed < examples_to_read:
             hdf5_filename = self.hdf5_filenames[self.hdf5_file_list_index]
-            print(f"{self.name}: filename={hdf5_filename} file_list_index={self.hdf5_file_list_index} file_index={self.hdf5_file_index}")
+            #print(f"{self.name}: filename={hdf5_filename} file_list_index={self.hdf5_file_list_index} file_index={self.hdf5_file_index}")
             examples_processed += self.read_hdf5(hdf5_filename, examples_to_read - examples_processed, make_molecules, requested_jiggles, record_in_dict)
             if self.hdf5_file_list_index >= len(self.hdf5_filenames):
                 break
