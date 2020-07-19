@@ -222,7 +222,7 @@ def main():
             if len(training_data_list) > 0:
                 minibatches_seen += 1
                 train_batch(training_data_list, model, optimizer, training_history)
-                training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches)
+                training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches, wait_time)
                 training_data_list = []
 
                 if minibatches_seen % testing_interval == 0:

@@ -86,7 +86,7 @@ class TrainingHistory():
         self.residuals_by_site_label = None # { molecule name : residuals }
         self.stats_by_element = None        # { element symbol : (mean error, RMSE) }
 
-    def print_training_status_update(self, epoch, minibatch, n_minibatches):
+    def print_training_status_update(self, epoch, minibatch, n_minibatches, wait_time):
         losses = np.array(self.minibatch_loss_buffer)
         train_loss = np.mean(losses)
         times = np.array(self.minibatch_training_time_buffer)
@@ -95,7 +95,11 @@ class TrainingHistory():
         delta = timedelta(seconds=elapsed)
         delta = str(delta)
         delta = delta[:-5]
-        print(f"Epoch {epoch}  Batch {minibatch:5d} / {n_minibatches:5d}   est_train_loss = {train_loss:10.3f}  time_per_batch = {time_per_batch:.2f} s  elapsed = {delta}", end="\r", flush=True)
+
+        # t_train is the average training time for the recent batches
+        # wait time is the time spent waiting to accumulate the batch from the queue
+        # in the last batch only
+        print(f"Epoch {epoch}  Batch {minibatch:5d} / {n_minibatches:5d}   train_loss = {train_loss:10.3f}  t_train = {time_per_batch:.2f} s  t_wait = {wait_time:.2f} s  elapsed = {delta}", end="\r", flush=True)
 
     def log_minibatch_loss(self, minibatch_loss, training_time):
         losses, times = self.minibatch_loss_buffer, self.minibatch_training_time_buffer
@@ -209,7 +213,7 @@ def compute_testing_loss(model, testing_dataloader, training_history, molecules_
     # print update
     elapsed = time.time() - time1
     print(f"         testing_loss = {testing_loss:10.3f}   testing_time = {elapsed:.2f} s                                        ")
-    print("         mean/RMSEs     ", end="")
+    print("         means / RMSEs     ", end="")
     for element, (mean_error,RMSE) in stats_by_element.items():
         print(f"{element}:({mean_error:.3f}/{RMSE:.3f})    ", end="")
     print(flush=True)
