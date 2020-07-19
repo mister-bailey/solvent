@@ -17,7 +17,8 @@ import e3nn
 import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
-from training_utils import Pipeline, Molecule, TrainingHistory, train_batch, compute_testing_loss
+from pipeline import Pipeline, Molecule
+from training_utils import TrainingHistory, train_batch, compute_testing_loss
 from diagnostics import print_parameter_size, count_parameters, get_object_size
 from variable_networks import VariableParityNetwork
 if __name__ == '__main__': print("done loading modules.")
@@ -187,7 +188,7 @@ def main():
     ### training ###
 
     # the actual training
-    training_start_time = time.time()
+    training_history = TrainingHistory()
     for epoch in range(1,n_epochs+1):
         print(f"=== Epoch {epoch} ===")
 
@@ -206,7 +207,6 @@ def main():
         checkpoint_index = 0
         training_data_list = []
         n_minibatches = math.ceil(training_size/batch_size)
-        training_history = TrainingHistory()
         while pipeline.any_coming():
             time1 = time.time()
             while pipeline.any_coming() and len(training_data_list) < batch_size:
@@ -216,12 +216,11 @@ def main():
 
             # determine whether all training examples have been seen and trained on
             if len(training_data_list) > 0:
-                data = tg.data.Batch.from_data_list(training_data_list)
-                train_batch(training_data_list, n_minibatches, model, optimizer,
-                            training_history, epoch, minibatches_seen)
+                minibatches_seen += 1
+                train_batch(training_data_list, model, optimizer, training_history)
+                training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches)
                 print(f"\nwait time: {wait_time:.2f}  molecule_queue {pipeline.molecule_queue.qsize()}  data_neighbors_queue {pipeline.data_neighbors_queue.qsize()}")
                 training_data_list = []
-                minibatches_seen += 1
 
                 #if minibatches_seen % testing_interval:
                 #    compute_testing_loss(testing_dataloader, training_history,
@@ -233,9 +232,6 @@ def main():
                 #    checkpoint_index += 1
 
     # clean up
-    training_stop_time = time.time()
-    training_elapsed_time = training_stop_time - training_start_time
-    print(f"Training took {training_elapsed_time:.3f} s.")
     pipeline.close()
 
     print("all done")
