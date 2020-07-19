@@ -123,6 +123,9 @@ class TrainingHistory():
 
 # train a single batch
 def train_batch(data_list, model, optimizer, training_history):
+    # set model to training mode (for batchnorm)
+    model.train()
+
     # forward pass
     time1 = time.time()
     data = tg.data.Batch.from_data_list(data_list)
@@ -145,6 +148,9 @@ def train_batch(data_list, model, optimizer, training_history):
 def compute_testing_loss(model, testing_dataloader, training_history, molecules_dict,
                          epoch, minibatches_seen):
     print("\ntesting...", end="\r", flush=True)
+
+    # set model to testing mode (for batchnorm)
+    model.eval()
     time1 = time.time()
     n_minibatches = math.ceil(testing_size/batch_size)
     testing_loss = 0.0
@@ -212,8 +218,8 @@ def compute_testing_loss(model, testing_dataloader, training_history, molecules_
 
     # print update
     elapsed = time.time() - time1
-    print(f"         testing_loss = {testing_loss:10.3f}   testing_time = {elapsed:.2f} s                                        ")
-    print("         means / RMSEs     ", end="")
+    print(f"                             testing_loss = {testing_loss:10.3f}   t_test = {elapsed:.2f} s                                        ")
+    print("                            means / RMSEs     ", end="")
     for element, (mean_error,RMSE) in stats_by_element.items():
-        print(f"{element}:({mean_error:.3f}/{RMSE:.3f})    ", end="")
+        print(f"{element} : {mean_error:.3f} / {RMSE:.3f}    ", end="")
     print(flush=True)
