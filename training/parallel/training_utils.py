@@ -14,6 +14,8 @@ import e3nn
 import e3nn.point.data_helpers as dh
 import training_config
 from stopwatch import Stopwatch
+import matplotlib
+import matplotlib.pyplot as plt
 
 ### Code to Generate Molecules ###
 
@@ -42,10 +44,11 @@ def checkpoint(model_kwargs, model, filename, optimizer):
         'model_kwargs' : model_kwargs,
         'optimizer_state_dict' : optimizer.state_dict()
     }
-    printf("Checkpointing to {filename}...", end='', flush=True)
+    print("                                                                                                      ", end="\r", flush=True)
+    print(f"Checkpointing to {filename}...", end='', flush=True)
     torch.save(model_dict, filename)
     file_size = os.path.getsize(filename) / 1E6
-    printf("occupies {file_size:.2f} MB.")
+    print(f"occupies {file_size:.2f} MB.", end='\r', flush=True)
 
 # mean-squared loss (not RMS!)
 def loss_function(output, data):
@@ -86,7 +89,7 @@ class TrainingHistory():
         self.residuals_by_site_label = None # { molecule name : residuals }
         self.stats_by_element = None        # { element symbol : (mean error, RMSE) }
 
-    def print_training_status_update(self, epoch, minibatch, n_minibatches, wait_time):
+    def print_training_status_update(self, epoch, minibatch, n_minibatches, t_wait, t_batch, q1, q2):
         losses = np.array(self.minibatch_loss_buffer)
         train_loss = np.mean(losses)
         times = np.array(self.minibatch_training_time_buffer)
@@ -98,8 +101,8 @@ class TrainingHistory():
 
         # t_train is the average training time for the recent batches
         # wait time is the time spent waiting to accumulate the batch from the queue
-        # in the last batch only
-        print(f"Epoch {epoch}  Batch {minibatch:5d} / {n_minibatches:5d}   train_loss = {train_loss:10.3f}  t_train = {time_per_batch:.2f} s  t_wait = {wait_time:.2f} s  elapsed = {delta}", end="\r", flush=True)
+        # in the last batch only, same goes for t_batch
+        print(f"{epoch} : {minibatch} / {n_minibatches}  train_loss = {train_loss:10.3f}  t_train = {time_per_batch:.2f} s  t_wait = {t_wait:.2f} s  t_batch = {t_batch:.2f}  mol_q = {q1}  dn_q = {q2}  t = {delta}      ", end="\r", flush=True)
 
     def log_minibatch_loss(self, minibatch_loss, training_time):
         losses, times = self.minibatch_loss_buffer, self.minibatch_training_time_buffer
@@ -117,9 +120,33 @@ class TrainingHistory():
         losses = np.array(self.minibatch_loss_buffer)
         training_loss = np.mean(losses)
         self.training_losses.append(training_loss)
-        self.minibatches = minibatches
+        self.minibatches.append(minibatches)
         self.residuals_by_molecule = residuals_by_molecule
         self.residuals_by_site_label = residuals_by_site_label
+
+    def write_files(self, checkpoint_prefix):
+        # save training/test loss graph
+        print("                                                                                                  ", end="\r", flush=True)
+#        print("Saving test/train loss graph...", end="", flush=True)
+#        graph_filename = f"{checkpoint_prefix}-graph.png"
+#        n_minibatches = math.ceil(training_size/batch_size)
+#        x_test = []
+#        for epoch, minibatches in zip(self.epochs, self.minibatches):
+#            fractional_epoch = epoch + minibatches/n_minibatches - 1
+#            x_test.append(fractional_epoch)
+#        x_test = np.array(x_test)
+#        x_train = x_test - self.training_window_size / n_minibatches
+#        plt.figure(figsize=(12,8))
+#        plt.plot(x_train, self.training_losses, "ro-", label="train")
+#        plt.plot(x_test, self.testing_losses, "bo-", label="test")
+#        plt.legend(loc="best")
+#        plt.savefig(graph_filename)
+#
+        # save raw data
+        history_filename = f"{checkpoint_prefix}-training_history.torch"
+        print("saving training history...", end="", flush=True)
+        torch.save(self, history_filename)
+        print("done", end="\r", flush=True)
 
 # train a single batch
 def train_batch(data_list, model, optimizer, training_history):
@@ -129,6 +156,7 @@ def train_batch(data_list, model, optimizer, training_history):
     # forward pass
     time1 = time.time()
     data = tg.data.Batch.from_data_list(data_list)
+    time2 = time.time()
     data.to(device)
     output = model(data.x, data.edge_index, data.edge_attr, n_norm=n_norm)
     loss, _ = loss_function(output,data)
@@ -140,8 +168,10 @@ def train_batch(data_list, model, optimizer, training_history):
 
     # update results
     minibatch_loss = np.sqrt(loss.item())  # RMSE
-    training_time = time.time() - time1
+    training_time = time.time() - time2
+    t_batch = time2 - time1
     training_history.log_minibatch_loss(minibatch_loss, training_time)
+    return t_batch
 
 # compute the testing losses
 # molecules_dict: name -> Molecule
@@ -188,7 +218,7 @@ def compute_testing_loss(model, testing_dataloader, training_history, molecules_
                 i += n_atoms
 
         # interim status update
-        print(f"testing  {minibatch_index+1:5d} / {n_minibatches:5d}   minibatch_loss {minibatch_loss:<10.3f}   testing_loss:{testing_loss:<10.3f}", end="\r", flush=True)
+        print(f"testing  {minibatch_index+1:5d} / {n_minibatches:5d}   minibatch_test_loss = {minibatch_loss:<10.3f}   overall_test_loss = {testing_loss:<10.3f}", end="\r", flush=True)
 
     # reshape residual data
     all_residuals = { element : [] for element in relevant_elements }  # element -> [residuals]
@@ -218,8 +248,8 @@ def compute_testing_loss(model, testing_dataloader, training_history, molecules_
 
     # print update
     elapsed = time.time() - time1
-    print(f"                             testing_loss = {testing_loss:10.3f}   t_test = {elapsed:.2f} s                                        ")
-    print("                            means / RMSEs     ", end="")
+    print(f"           testing_loss = {testing_loss:10.3f}   t_test = {elapsed:.2f} s                                        ")
+    print("          means / RMSEs =   ", end="")
     for element, (mean_error,RMSE) in stats_by_element.items():
         print(f"{element} : {mean_error:.3f} / {RMSE:.3f}    ", end="")
     print(flush=True)

@@ -60,7 +60,7 @@ data_neighbors_queue_max_size = int(config['data']['data_neighbors_queue_max_siz
 
 # model parameters
 load_model_from_file = config['model']['load_model_from_file']
-if load_model_from_file.lower() == "false":
+if load_model_from_file.lower() == "false" or load_model_from_file.lower() == "none":
     load_model_from_file = False
 Rs_in = [ (n_elements, 0, 1) ]  # n_features, rank 0 tensor, even parity
 Rs_out = [ (1,0,1) ]            # one output per atom, rank 0 tensor, even parity

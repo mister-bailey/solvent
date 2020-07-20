@@ -18,7 +18,7 @@ import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
 from pipeline import Pipeline, Molecule
-from training_utils import TrainingHistory, train_batch, compute_testing_loss
+from training_utils import TrainingHistory, train_batch, compute_testing_loss, checkpoint
 from diagnostics import print_parameter_size, count_parameters, get_object_size
 from variable_networks import VariableParityNetwork
 if __name__ == '__main__': print("done loading modules.")
@@ -26,9 +26,10 @@ if __name__ == '__main__': print("done loading modules.")
 if os.name == 'posix':
     import resource
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    print(f"\nPreviously: maximum # of open file descriptors: {rlimit[0]} (soft limit) / {rlimit[1]} (hard limit)")
     resource.setrlimit(resource.RLIMIT_NOFILE, (100000, rlimit[1]))
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
-    print(f"\nMaximum # of open file descriptors: {rlimit[0]} (soft limit) / {rlimit[1]} (hard limit)")
+    print(f"\nNow: maximum # of open file descriptors: {rlimit[0]} (soft limit) / {rlimit[1]} (hard limit)")
 
 ### read configuration values ###
 
@@ -71,7 +72,9 @@ def main():
     ### initialization ###
 
     # load pre-existing model if requested
+    print("\n=== Model Generation ===\n")
     if load_model_from_file == False:
+        print("A brand new model was requested.")
         muls = training_config.muls
         lmaxes = training_config.lmaxes
         max_radius = training_config.max_radius
@@ -80,21 +83,34 @@ def main():
         model = None
         optimizer = None
     else:
-        model_filename = load_model_from_file
-        if not os.path.exists(model_filename):
-            print(f"Could not find serialized model '{model_filename}'!")
+        model_filenames = glob(load_model_from_file)
+        if len(model_filenames) == 0:
+            print(f"Could not find any checkpoints matching '{load_model_from_file}'!")
             exit()
-        print(f"Loading model from {model_filename}...")
+        model_filename = max(model_filenames, key = os.path.getctime)
+        print(f"Loading model from {model_filename}...", end="")
+
+        # read saved model and optimizer data
         model_dict = torch.load(model_filename)
         model_kwargs = model_dict['model_kwargs']
+
+        # read updated configuration values
         muls = model_kwargs['muls']
         lmaxes = model_kwargs['lmaxes']
-        model = VariableParityNetwork(convolution=Convolution, **model_kwargs)
-        model.load_state_dict(model_dict['state_dict'])
-        learning_rate = model_dict['optimizer_state_dict']['lr']
-        optimizer = torch.optim.Adam(model.parameters(), 0.1)
-        optimizer.load_state_dict(model_dict["optimizer_state_dict"])
+        max_radius = model_kwargs['max_radius']
+        learning_rate = model_dict['optimizer_state_dict']['param_groups'][0]['lr']
         number_of_basis = model_kwargs['number_of_basis']
+
+        # reconstruct model
+        model = VariableParityNetwork(convolution=Convolution, batch_norm=True, **model_kwargs)
+        model.load_state_dict(model_dict["state_dict"])
+        model.to(device)
+
+        # reconstruct optimizer
+        optimizer = torch.optim.Adam(model.parameters(), learning_rate)
+        optimizer.load_state_dict(model_dict["optimizer_state_dict"])
+
+        print("done.")
 
     # report configuration
     print("\n=== Configuration ===\n")
@@ -169,6 +185,7 @@ def main():
             'number_of_basis' : number_of_basis,
         }
         model = VariableParityNetwork(convolution=Convolution, batch_norm=True, **model_kwargs)
+        model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), learning_rate)
 
     # print model details
@@ -184,7 +201,6 @@ def main():
     print()
     print("Optimizer:")
     print(optimizer)
-    model.to(device)
 
     ### training ###
     print("\n=== Training ===")
@@ -192,8 +208,8 @@ def main():
     # the actual training
     training_history = TrainingHistory()
     for epoch in range(1,n_epochs+1):
-        #print(f"=== Epoch {epoch} ===")
-        print()
+        print("                                                                                                ")
+        print("Initializing...", end="\r", flush=True)
 
         # reset the counters for reading the input files
         pipeline.restart()
@@ -207,7 +223,6 @@ def main():
 
         # iterate through all training examples
         minibatches_seen = 0
-        checkpoint_index = 0
         training_data_list = []
         n_minibatches = math.ceil(training_size/batch_size)
         while pipeline.any_coming():
@@ -215,26 +230,28 @@ def main():
             while pipeline.any_coming() and len(training_data_list) < batch_size:
                 data_neighbors = pipeline.get_data_neighbor()
                 training_data_list.append(data_neighbors)
-            wait_time = time.time()-time1
-            #print(f"\nwait time: {wait_time:.2f}  molecule_queue {pipeline.molecule_queue.qsize()}  data_neighbors_queue {pipeline.data_neighbors_queue.qsize()}")
+            t_wait = time.time()-time1
+            q1, q2 = pipeline.molecule_queue.qsize(), pipeline.data_neighbors_queue.qsize()
 
             # determine whether all training examples have been seen and trained on
             if len(training_data_list) > 0:
                 minibatches_seen += 1
-                train_batch(training_data_list, model, optimizer, training_history)
-                training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches, wait_time)
+                t_batch = train_batch(training_data_list, model, optimizer, training_history)
+                training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches, t_wait, t_batch, q1, q2)
                 training_data_list = []
 
                 if minibatches_seen % testing_interval == 0:
                     compute_testing_loss(model, testing_dataloader, training_history,
                                          testing_molecules_dict, epoch, minibatches_seen)
 
-                #if minibatches_seen % checkpoint_interval:
-                #    checkpoint_filename = f"{checkpoint_prefix}-epoch_{epoch}-chk_{checkpoint_index}.torch"
-                #    checkpoint(model_kwargs, model, checkpoint_filename, optimizer)
-                #    checkpoint_index += 1
+                if minibatches_seen % checkpoint_interval == 0:
+                    checkpoint_filename = f"{checkpoint_prefix}-epoch_{epoch:03d}-checkpoint.torch"
+                    checkpoint(model_kwargs, model, checkpoint_filename, optimizer)
+                    training_history.write_files(checkpoint_prefix)
 
     # clean up
+    print("                                                                                                 ")
+    print("Cleaning up...")
     pipeline.close()
 
     print("\nProgram complete.")
