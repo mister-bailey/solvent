@@ -16,6 +16,7 @@ import training_config
 from stopwatch import Stopwatch
 import matplotlib
 import matplotlib.pyplot as plt
+from molecule_pipeline import ExampleBatch
 
 ### Code to Generate Molecules ###
 
@@ -89,7 +90,7 @@ class TrainingHistory():
         self.residuals_by_site_label = None # { molecule name : residuals }
         self.stats_by_element = None        # { element symbol : (mean error, RMSE) }
 
-    def print_training_status_update(self, epoch, minibatch, n_minibatches, t_wait, t_batch, q1, q2):
+    def print_training_status_update(self, epoch, minibatch, n_minibatches, t_wait, q1, q2):
         losses = np.array(self.minibatch_loss_buffer)
         train_loss = np.mean(losses)
         times = np.array(self.minibatch_training_time_buffer)
@@ -102,7 +103,8 @@ class TrainingHistory():
         # t_train is the average training time for the recent batches
         # wait time is the time spent waiting to accumulate the batch from the queue
         # in the last batch only, same goes for t_batch
-        print(f"{epoch} : {minibatch} / {n_minibatches}  train_loss = {train_loss:10.3f}  t_train = {time_per_batch:.2f} s  t_wait = {t_wait:.2f} s  t_batch = {t_batch:.2f}  mol_q = {q1}  dn_q = {q2}  t = {delta}      ", end="\r", flush=True)
+        #  t_batch = {t_batch:.2f}
+        print(f"{epoch} : {minibatch} / {n_minibatches}  train_loss = {train_loss:10.3f}  t_train = {time_per_batch:.2f} s  t_wait = {t_wait:.2f} s  t = {delta}   ", end="\r", flush=True)
 
     def log_minibatch_loss(self, minibatch_loss, training_time):
         losses, times = self.minibatch_loss_buffer, self.minibatch_training_time_buffer
@@ -149,15 +151,15 @@ class TrainingHistory():
         print("done", end="\r", flush=True)
 
 # train a single batch
-def train_batch(data_list, model, optimizer, training_history):
+def train_batch(data, model, optimizer, training_history):
     # set model to training mode (for batchnorm)
     model.train()
 
     # forward pass
-    time1 = time.time()
-    data = tg.data.Batch.from_data_list(data_list)
+    #time1 = time.time()
+    #data = tg.data.Batch.from_data_list(data_list)
     time2 = time.time()
-    data.to(device)
+    data = data.to(device)
     output = model(data.x, data.edge_index, data.edge_attr, n_norm=n_norm)
     loss, _ = loss_function(output,data)
 
@@ -169,56 +171,80 @@ def train_batch(data_list, model, optimizer, training_history):
     # update results
     minibatch_loss = np.sqrt(loss.item())  # RMSE
     training_time = time.time() - time2
-    t_batch = time2 - time1
+    #t_batch = time2 - time1
     training_history.log_minibatch_loss(minibatch_loss, training_time)
-    return t_batch
+    #return t_batch
+
+# Collect list of examples into batches (slow, so only use for testing dataset)
+# returns a list of batches, where the returned batches each have an extra field: example_list
+def batch_examples(example_list, batch_size):
+    batch_list = []
+    for bn, n in enumerate(range(0,len(example_list),batch_size)):
+        sub_list = example_list[n:n+batch_size]
+        pos = torch.cat([e.pos for e in sub_list])
+        x = torch.cat([e.x for e in sub_list])
+        y = torch.cat([e.y for e in sub_list])
+        weights = torch.cat([e.weights for e in sub_list])
+        atom_tally = 0
+        sub_list_edges = []
+        for e in sub_list:
+            sub_list_edges.append(e.edge_index + atom_tally)
+            atom_tally += e.pos.shape[0]
+        edge_index = torch.cat(sub_list_edges, axis=1)
+        edge_attr = torch.cat([e.edge_attr for e in sub_list])
+
+        batch = ExampleBatch(pos, x, y, weights, edge_index, edge_attr, name=f"batch {bn}", n_examples=len(sub_list))
+        batch.example_list = sub_list
+        batch_list.append(batch)
+    return batch_list
+            
 
 # compute the testing losses
 # molecules_dict: name -> Molecule
-def compute_testing_loss(model, testing_dataloader, training_history, molecules_dict,
+def compute_testing_loss(model, testing_batches, training_history, molecules_dict,
                          epoch, minibatches_seen):
     print("\ntesting...", end="\r", flush=True)
 
     # set model to testing mode (for batchnorm)
     model.eval()
     time1 = time.time()
-    n_minibatches = math.ceil(testing_size/batch_size)
+    n_minibatches = len(testing_batches)
     testing_loss = 0.0
     n_testing_examples_seen = 0
     residuals_by_molecule = {}
     residuals_by_site_label = {}
     stats_by_element = {}
-    for minibatch_index, data_list in enumerate(testing_dataloader):
-        data = tg.data.Batch.from_data_list(data_list)
-        data.to(device)
-        n_examples_this_minibatch = len(data)
+    for minibatch_index, minibatch in enumerate(testing_batches):
+        minibatch.to(device)
 
         with torch.no_grad():
             # run model
-            output = model(data.x, data.edge_index, data.edge_attr, n_norm=n_norm)
+            output = model(minibatch.x, minibatch.edge_index, minibatch.edge_attr, n_norm=n_norm)
 
             # compute MSE
-            loss, residuals = loss_function(output, data)
+            loss, residuals = loss_function(output, minibatch)
             minibatch_loss = np.sqrt(loss.item())
             testing_loss = testing_loss * n_testing_examples_seen + \
-                           minibatch_loss * n_examples_this_minibatch
-            n_testing_examples_seen += n_examples_this_minibatch
+                           minibatch_loss * minibatch.n_examples
+            n_testing_examples_seen += minibatch.n_examples
             testing_loss = testing_loss / n_testing_examples_seen
 
             # store residuals
             residuals = residuals.squeeze(-1).cpu().numpy()
-            i = 0
-            for name in data.name:
-                molecule = molecules_dict[name]
+            atom_tally = 0
+            for example in minibatch.example_list:
+                molecule = molecules_dict[example.name]
                 n_atoms = molecule.n_atoms
-                if name not in residuals_by_molecule:
-                    residuals_by_molecule[name] = []
-                subset = residuals[i:i+n_atoms]
-                residuals_by_molecule[name].append(subset)
-                i += n_atoms
+                if example.name not in residuals_by_molecule:
+                    residuals_by_molecule[example.name] = []
+                subset = residuals[atom_tally:atom_tally+n_atoms]
+                residuals_by_molecule[example.name].append(subset)
+                atom_tally += n_atoms
+            assert atom_tally == residuals.shape[0], "Testing atom count mismatch!"
 
         # interim status update
         print(f"testing  {minibatch_index+1:5d} / {n_minibatches:5d}   minibatch_test_loss = {minibatch_loss:<10.3f}   overall_test_loss = {testing_loss:<10.3f}", end="\r", flush=True)
+    #testing_loss /= n_minibatches # ???????????????????
 
     # reshape residual data
     all_residuals = { element : [] for element in relevant_elements }  # element -> [residuals]

@@ -17,11 +17,12 @@ import e3nn
 import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
-from pipeline import Pipeline, Molecule
-from training_utils import TrainingHistory, train_batch, compute_testing_loss, checkpoint
+from pipeline import Pipeline, Molecule, test_data_neighbors
+from training_utils import TrainingHistory, train_batch, compute_testing_loss, checkpoint, batch_examples
 from diagnostics import print_parameter_size, count_parameters, get_object_size
 from variable_networks import VariableParityNetwork
 if __name__ == '__main__': print("done loading modules.")
+import sys
 
 if os.name == 'posix':
     import resource
@@ -151,23 +152,33 @@ def main():
     print("Working...", end="\r", flush=True)
 
     time1 = time.time()
-    pipeline = Pipeline(hdf5_filenames, jiggles_per_molecule, n_molecule_processors,
-                        max_radius, Rs_in, Rs_out, molecule_queue_max_size)
+    pipeline = Pipeline(hdf5_filenames, 1, max_radius,
+                        Rs_in, Rs_out, jiggles_per_molecule, n_molecule_processors, molecule_queue_max_size)
     testing_molecules_dict = pipeline.testing_molecules_dict
     pipeline.start_reading(testing_size,True,True)  # (how many examples to process,
                                                     #  whether to make Molecules,
                                                     #  whether to save the molecules to a dict)
 
     # read in and process testing data directly to memory
-    testing_data_list = []
+    testing_examples = []
 
+    print("Reading test examples...")
     while pipeline.any_coming():
-        data_neighbor = pipeline.get_data_neighbor()
-        testing_data_list.append(data_neighbor)
-    assert len(testing_data_list) == testing_size, \
-        f">>>>> expected {testing_size} testing examples but got {len(testing_data_list)}"
+        try:
+            example = pipeline.get_batch(20)
+        except Exception as e:
+            print("Failed to get batch!")
+            print(e)
+            exit()
+        testing_examples.append(example)
+        #if len(testing_examples) <= 5:
+        #    test_data_neighbors(example, Rs_in, Rs_out, max_radius, testing_molecules_dict)
+    assert len(testing_examples) == testing_size, \
+        f">>>>> expected {testing_size} testing examples but got {len(testing_examples)}"
+    
+    print("Batching test examples...")
+    testing_batches = batch_examples(testing_examples, batch_size)
 
-    testing_dataloader = tg.data.DataListLoader(testing_data_list, batch_size=batch_size, shuffle=False)
     time2 = time.time()
     print(f"Done preprocessing testing data!  That took {time2-time1:.3f} s.\n")
     testing_molecules_dict = dict(testing_molecules_dict)
@@ -215,39 +226,35 @@ def main():
         pipeline.restart()
 
         # skip over the first testing_size examples
-        pipeline.start_reading(testing_size, False, False)
-        pipeline.wait_till_done()
+        pipeline.start_reading(testing_size, False, False, batch_size=1, wait=True)
+        #pipeline.wait_till_done()
 
         # process the next training_size examples
-        pipeline.start_reading(training_size, True, False)
+        pipeline.start_reading(training_size, True, False, batch_size=batch_size)
 
         # iterate through all training examples
         minibatches_seen = 0
-        training_data_list = []
+        #training_data_list = []
         n_minibatches = math.ceil(training_size/batch_size)
         while pipeline.any_coming():
             time1 = time.time()
-            while pipeline.any_coming() and len(training_data_list) < batch_size:
-                data_neighbors = pipeline.get_data_neighbor()
-                training_data_list.append(data_neighbors)
+            data = pipeline.get_batch()
+
             t_wait = time.time()-time1
-            q1, q2 = pipeline.molecule_queue.qsize(), pipeline.data_neighbors_queue.qsize()
+            bqsize = pipeline.batch_queue.qsize()
 
-            # determine whether all training examples have been seen and trained on
-            if len(training_data_list) > 0:
-                minibatches_seen += 1
-                t_batch = train_batch(training_data_list, model, optimizer, training_history)
-                training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches, t_wait, t_batch, q1, q2)
-                training_data_list = []
+            minibatches_seen += 1
+            train_batch(data, model, optimizer, training_history)
+            training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches, t_wait, 0, bqsize)
 
-                if minibatches_seen % testing_interval == 0:
-                    compute_testing_loss(model, testing_dataloader, training_history,
-                                         testing_molecules_dict, epoch, minibatches_seen)
+            if minibatches_seen % testing_interval == 0:
+                compute_testing_loss(model, testing_batches, training_history,
+                                        testing_molecules_dict, epoch, minibatches_seen)
 
-                if minibatches_seen % checkpoint_interval == 0:
-                    checkpoint_filename = f"{checkpoint_prefix}-epoch_{epoch:03d}-checkpoint.torch"
-                    checkpoint(model_kwargs, model, checkpoint_filename, optimizer)
-                    training_history.write_files(checkpoint_prefix)
+            if minibatches_seen % checkpoint_interval == 0:
+                checkpoint_filename = f"{checkpoint_prefix}-epoch_{epoch:03d}-checkpoint.torch"
+                checkpoint(model_kwargs, model, checkpoint_filename, optimizer)
+                training_history.write_files(checkpoint_prefix)
 
     # clean up
     print("                                                                                                 ")

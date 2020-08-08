@@ -13,6 +13,8 @@ import torch_geometric as tg
 import e3nn
 import e3nn.point.data_helpers as dh
 import training_config
+from molecule_pipeline import MoleculePipeline
+import itertools
 
 ### Code to Generate Molecules ###
 
@@ -103,50 +105,73 @@ def wait_semaphore(s):
     s.acquire()
     s.release()
 
+# returns total width (in floating point numbers) of Rs data
+def Rs_size(Rs):
+    size = 0
+    for mul, l, _ in Rs:
+        size += mul * (2 * l + 1)
+    #print(f"Computed Rs_size = {size}")
+    return size
+
 class Pipeline():
-    def __init__(self, hdf5_filenames, requested_jiggles, n_molecule_processors,
-                 max_radius, Rs_in, Rs_out, max_size=None, manager=None):
+    def __init__(self, hdf5_filenames, batch_size, max_radius, Rs_in, Rs_out, requested_jiggles=1,
+                n_molecule_processors=1, molecule_cap = 10000, example_cap = 10000, batch_cap = 100,
+                share_batches=True, manager=None, new_process=True):
         if manager is None:
             manager = Manager()
         #self.manager = manager
-        self.command_queue = manager.Queue(max_size)
-        self.molecule_queue = manager.Queue(max_size)
-        self.data_neighbors_queue = manager.Queue(max_size)
-        self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
-                                            (self, max_radius, Rs_in, Rs_out))
-        self.testing_molecules_dict = manager.dict()
-        self.dataset_reader = DatasetReader("dataset_reader", self, hdf5_filenames,
-                                            requested_jiggles, self.testing_molecules_dict)
-
         self.knows = Semaphore(0) # > 0 if we know if any are coming
+        self.working = Semaphore(1) # == 0 if DatasetReader is processing a command
         self.finished_reading = Lock() # locked if we're still reading from file
         self.in_pipe = Value('i',0) # number of molecules that have been sent to the pool
 
-        self.dataset_reader.start()
+        self.command_queue = manager.Queue(10)
+        #self.molecule_queue = manager.Queue(max_size)
+        self.molecule_pipeline = None
+        self.batch_queue = manager.Queue(batch_cap)
+        self.share_batches = share_batches
+        #self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
+        #                                    (self, max_radius, Rs_in, Rs_out))
+        self.testing_molecules_dict = manager.dict()
+        self.dataset_reader = DatasetReader("dataset_reader", self, hdf5_filenames, batch_size,
+                    max_radius, Rs_in, Rs_out, requested_jiggles, n_molecule_processors, molecule_cap, example_cap,
+                    batch_cap, self.testing_molecules_dict, new_process)
+        if new_process:
+            self.dataset_reader.start()
 
-    def __getstate__(self):
-        self_dict = self.__dict__.copy()
-        self_dict['molecule_processor_pool'] = None
-        return self_dict
+    #def __getstate__(self):
+    #    self_dict = self.__dict__.copy()
+    #    self_dict['molecule_processor_pool'] = None
+    #    return self_dict
 
     # methods for pipeline user/consumer:
-    def start_reading(self, examples_to_read, make_molecules, record_in_dict):
+    def start_reading(self, examples_to_read, make_molecules=True, record_in_dict=False, batch_size=None, wait=False):
         #print("Start reading...")
         assert check_semaphore(self.finished_reading), "Tried to start reading file, but already reading!"
         with self.in_pipe.get_lock():
             assert self.in_pipe.value == 0, "Tried to start reading, but examples already in pipe!"
         set_semaphore(self.finished_reading, False)
         set_semaphore(self.knows, False)
-        self.command_queue.put((examples_to_read, make_molecules, record_in_dict))
+        self.working.acquire()
+        self.command_queue.put(StartSignal(examples_to_read, make_molecules, record_in_dict, batch_size))
+        if wait: self.wait_till_done()
 
     def wait_till_done(self):
-        wait_semaphore(self.knows)
-        wait_semaphore(self.finished_reading)
-        assert not self.any_coming(), "Pipeline consumer is waiting on pipeline, but not getting from pipe!"
+        #wait_semaphore(self.knows)
+        #wait_semaphore(self.finished_reading)
+        self.working.acquire()
+        self.working.release()
+        if self.any_coming():
+            with self.in_pipe.get_lock():
+                ip = self.in_pipe.value
+            raise Exception(f"Waiting with {ip} examples in pipe!")
 
     def restart(self):
+        assert check_semaphore(self.knows), "Tried to restart, but don't know if finished!"
+        assert check_semaphore(self.finished_reading), "Tried to restart, but not finished reading!"
         assert not self.any_coming() , "Tried to restart pipeline before it was empty!"
-        self.command_queue.put(DatasetSignal.RESTART)
+        self.working.acquire()
+        self.command_queue.put(RestartSignal())
         # What to do if things are still in the pipe???
 
     def any_coming(self): # returns True if at least one example is coming
@@ -154,179 +179,236 @@ class Pipeline():
         with self.in_pipe.get_lock():
             return self.in_pipe.value > 0
 
-    def get_data_neighbor(self, timeout=None):
-        assert self.any_coming(), "Tried to get an example from an empty pipeline!"
-        x = self.data_neighbors_queue.get(True, timeout)
+    def get_batch(self, timeout=None):
+        assert self.any_coming(), "Tried to get data from an empty pipeline!"
+        x = self.batch_queue.get(True, timeout)
         with self.in_pipe.get_lock():
-            self.in_pipe.value -= 1
+            self.in_pipe.value -= x.n_examples
             if self.in_pipe.value == 0 and not check_semaphore(self.finished_reading):
                 set_semaphore(self.knows, False)
-            return x
+        return x
 
     def close(self):
-        self.command_queue.put(DatasetSignal.STOP)
-        self.molecule_processor_pool.close()
-        time.sleep(2)
-        self.molecule_processor_pool.terminate()
-        self.molecule_processor_pool.join()
+        self.dataset_reader.terminate()
+        self.dataset_reader.join()
 
     # methods for DatasetReader:
     def get_command(self):
         return self.command_queue.get()
 
-    def put_molecule(self, m):
-        self.molecule_queue.put(m)
+    def put_molecule_to_ext(self, m, block=True):
+        r = self.molecule_pipeline.put_molecule(m, block)
+        if not r:
+            return False
         with self.in_pipe.get_lock():
+            if self.in_pipe.value == 0:
+                set_semaphore(self.knows, True)
             self.in_pipe.value += m.perturbed_geometries.shape[0]
-            set_semaphore(self.knows, True)
+        return True
 
+    def get_batch_from_ext(self, block=True):
+        return self.molecule_pipeline.get_next_batch(block)
+
+    def ext_batch_ready(self):
+        return self.molecule_pipeline.batch_ready()
+            
     def set_finished_reading(self): # !!! Call only after you've put the molecules !!!
+        #print("*** Finished reading ***")
         set_semaphore(self.finished_reading, True)
         set_semaphore(self.knows, True)
+        self.molecule_pipeline.notify_finished()
+        #print(f"*** self.knows = {check_semaphore(self.knows)} ***")
 
-    # methods for molecule processors:
-    def get_molecule(self):
-        return self.molecule_queue.get()
+    def put_batch(self, x):
+        #self.batch_queue.put(DummyBatch(x.n_examples))
+        #return
+        if self.share_batches:
+            x.share_memory_()
+        self.batch_queue.put(x)
 
-    def put_data_neighbor(self, x):
-        self.data_neighbors_queue.put(x)
+class DummyBatch():
+    def __init__(self, n_examples):
+        self.n_examples = n_examples
 
-class DatasetSignal(Enum):
-    # a "poison pill" that signals to the final thread
-    # that a phase of calculation is complete
-    STOP = 1
+class DatasetSignal():
+    def __str__(self):
+        return "DatasetSignal"
 
-    # tells process_datasets to start from the beginning of the file
-    RESTART = 2
+class RestartSignal(DatasetSignal):
+    def __str__(self):
+        return "RestartSignal"
+
+class StartSignal(DatasetSignal):
+    def __init__(self, examples_to_read, make_molecules=True, record_in_dict=False, batch_size=None):
+        self.examples_to_read = examples_to_read
+        self.make_molecules = make_molecules
+        self.record_in_dict = record_in_dict
+        self.batch_size = batch_size
 
     def __str__(self):
-        return self._name_
+        r = f"StartSignal(examples_to_read={self.examples_to_read}, make_molecules={self.make_molecules}, record_in_dict={self.record_in_dict}"
+        if self.batch_size is not None:
+            r += f", batch_size={self.batch_size}"
+        return r + ")"
 
 # process that reads an hdf5 file and returns Molecules
 class DatasetReader(Process):
     def __init__(self, name, pipeline,
-                       hdf5_filenames,
-                       requested_jiggles,
-                       testing_molecules_dict):
-        super().__init__(group=None, target=None, name=name)
+                       hdf5_filenames, batch_size, max_radius, Rs_in, Rs_out, requested_jiggles,
+                       num_threads, molecule_cap, example_cap, batch_cap,
+                       testing_molecules_dict, new_process = True):
+        if new_process:
+            super().__init__(group=None, target=None, name=name)
         self.pipeline = pipeline
         self.hdf5_filenames = hdf5_filenames   # hdf5 files to process
         self.hdf5_file_list_index = 0          # which hdf5 file
         self.hdf5_file_index = 0               # which example within the hdf5 file
+        assert isinstance(requested_jiggles, int), "requested_jiggles should be an integer"
         self.requested_jiggles = requested_jiggles  # how many jiggles per file
         self.testing_molecules_dict = testing_molecules_dict   # molecule name -> Molecule
+        self.molecule_pipeline = None
+        self.molecule_pipeline_args = (batch_size, max_radius, Rs_size(Rs_in),
+                    Rs_size(Rs_out), num_threads, molecule_cap, example_cap, batch_cap)
+        print("(batch_size, max_radius, x_size, y_size, num_threads, molecule_cap, example_cap, batch_cap)")
+        print(f" = {self.molecule_pipeline_args}")
+        self.batch_number = 0
+        self.molecule_number = 0
 
     # process the data in all hdf5 files
     def run(self):
+        if self.molecule_pipeline is None:
+            self.molecule_pipeline = MoleculePipeline(*self.molecule_pipeline_args)
+            self.pipeline.molecule_pipeline = self.molecule_pipeline
         assert len(self.hdf5_filenames) > 0, "no files to process!"
 
         while True:
             command = self.pipeline.get_command()
             #print(f"Command: {command}")
-            if command == DatasetSignal.RESTART:
+            if isinstance(command, RestartSignal):
                 self.hdf5_file_list_index = 0
                 self.hdf5_file_index = 0
-                continue
-            elif command == DatasetSignal.STOP:
-                break
-            elif isinstance(command, tuple):
-                assert len(command) == 3, \
-                       "expected 3-tuple: (examples_to_process, make_molecules, record_in_dict)"
-                examples_to_process, make_molecules, record_in_dict = command
-                self.read_examples(examples_to_process, make_molecules, self.requested_jiggles, record_in_dict)
+                #self.molecule_pipeline.notify_starting()
+            elif isinstance(command, StartSignal):
+                self.batch_number = 0
+                self.molecule_number = 0
+                self.molecule_pipeline.notify_starting(command.batch_size)
+                self.read_examples(command.examples_to_read, command.make_molecules, command.record_in_dict)
                 self.pipeline.set_finished_reading()
             else:
                 raise ValueError("unexpected work type")
+            self.pipeline.working.release()
 
     # iterate through hdf5 filenames, picking up where we left off
     # returns: number of examples processed
-    def read_examples(self, examples_to_read, make_molecules, requested_jiggles, record_in_dict):
-        examples_processed = 0       # how many examples have been processed this round
+    def read_examples(self, examples_to_read, make_molecules, record_in_dict):
+        examples_read = 0       # how many examples have been processed this round
         assert self.hdf5_file_list_index < len(self.hdf5_filenames), \
             "request to read examples, but files are finished!"
-        while examples_processed < examples_to_read:
+        while examples_read < examples_to_read:
             hdf5_filename = self.hdf5_filenames[self.hdf5_file_list_index]
             #print(f"{self.name}: filename={hdf5_filename} file_list_index={self.hdf5_file_list_index} file_index={self.hdf5_file_index}")
-            examples_processed += self.read_hdf5(hdf5_filename, examples_to_read - examples_processed, make_molecules, requested_jiggles, record_in_dict)
+            examples_read += self.read_hdf5(hdf5_filename, examples_to_read - examples_read, make_molecules, record_in_dict)
             if self.hdf5_file_list_index >= len(self.hdf5_filenames):
                 break
-        return examples_processed
+        return examples_read
 
     # process the data in this hdf5 file
     # requested_jiggles examples will be taken: 1 (default) or listlike
     # make_molecules: boolean that tells us if we should make Molecules objects
     #                 or just skip over these records
     # returns: number of molecules read from this file
-    def read_hdf5(self, filename, examples_to_read, make_molecules, requested_jiggles, record_in_dict):
+    def read_hdf5(self, filename, examples_to_read, make_molecules, record_in_dict):
         with h5py.File(filename, "r") as h5:
-            h5_keys = []
-            h5_values = []
-            for key in h5.keys():
-                if not key.startswith("data_"):
-                    continue
-                value = np.array(h5[key])
-                h5_keys.append(key)
-                h5_values.append(value)
+            h5_keys = (k for k in h5.keys() if k.startswith("data_"))
 
             examples_read = 0
-            while examples_read < examples_to_read and self.hdf5_file_index < len(h5_keys):
-                dataset_name = h5_keys[self.hdf5_file_index]
-                geometries_and_shieldings = h5_values[self.hdf5_file_index]
-                assert np.shape(geometries_and_shieldings)[2] == 4, "should be x,y,z,shielding"
-
-                dataset_number = dataset_name.split("_")[1]
-
-                if isinstance(requested_jiggles, int):
-                    jiggles = list(range(requested_jiggles))
-                elif isinstance(requested_jiggles, list):
-                    jiggles = requested_jiggles
-
-                jiggles_needed = examples_to_read - examples_read
-                assert jiggles_needed >= 1
-                if jiggles_needed < len(jiggles):
-                    jiggles = jiggles[:jiggles_needed]
-
-                # NOTE: We don't split a single molecule between different batches!
-                perturbed_geometries = geometries_and_shieldings[jiggles,:,:3]
-                perturbed_shieldings = geometries_and_shieldings[jiggles,:,3]
-                n_examples, n_atoms, _ = np.shape(perturbed_geometries)
-
-                atomic_symbols = h5.attrs[f"atomic_symbols_{dataset_number}"]
-                assert len(atomic_symbols) == n_atoms, \
-                       f"expected {n_atoms} atomic_symbols, but got {len(atomic_symbols)}"
-                for a in atomic_symbols:
-                    assert a in all_elements, \
-                    f"unexpected element!  need to add {a} to all_elements"
-
-                symmetrical_atoms = str2array(h5.attrs[f"symmetrical_atoms_{dataset_number}"])
-
-                # store the results
+            for dataset_name in itertools.islice(h5_keys, self.hdf5_file_index, None):
+                n_examples = min(examples_to_read - examples_read, self.requested_jiggles, h5[dataset_name].shape[0])
+                #print(f"Reading molecule {dataset_name}.")
                 if make_molecules:
+                    geometries_and_shieldings = h5[dataset_name][:n_examples]
+
+                    #print("AAAAAAA")
+                    assert np.shape(geometries_and_shieldings)[2] == 4, "should be x,y,z,shielding"
+
+                    dataset_number = dataset_name.split("_")[1]
+
+                    #if isinstance(requested_jiggles, int):
+                    #    jiggles = list(range(requested_jiggles))
+                    #elif isinstance(requested_jiggles, list):
+                    #    jiggles = requested_jiggles
+
+                    #if jiggles_needed < len(jiggles):
+                    #    jiggles = jiggles[:jiggles_needed]
+
+                    # NOTE: We don't split a single molecule between different batches!
+                    perturbed_geometries = geometries_and_shieldings[:,:,:3]
+                    perturbed_shieldings = geometries_and_shieldings[:,:,3]
+                    n_atoms = perturbed_geometries.shape[1]
+
+                    #print("BBBBBBB")
+
+                    atomic_symbols = h5.attrs[f"atomic_symbols_{dataset_number}"]
+
+                    #print("   BBBB")
+                    assert len(atomic_symbols) == n_atoms, \
+                        f"expected {n_atoms} atomic_symbols, but got {len(atomic_symbols)}"
+                    for a in atomic_symbols:
+                        assert a in all_elements, \
+                        f"unexpected element!  need to add {a} to all_elements"
+
+                    #print("CCCCCCC")
+
+                    symmetrical_atoms = str2array(h5.attrs[f"symmetrical_atoms_{dataset_number}"])
+
+                    #print("DDDDDDD")
+
+                    # store the results
                     molecule = Molecule(dataset_number, atomic_symbols, symmetrical_atoms,
                                         perturbed_geometries, perturbed_shieldings)
-                    self.pipeline.put_molecule(molecule)
+                    #print(f"Putting molecule {self.molecule_number} to pipeline.")
+                    self.pipeline.put_molecule_to_ext(molecule)
+                    self.molecule_number += 1
                     if record_in_dict:
                         self.testing_molecules_dict[molecule.name] = molecule
                     #print(f"put molecule {molecule.name}, n_examples={n_examples}")
 
+                    while self.pipeline.ext_batch_ready():
+                        #print(f"Getting batch {self.batch_number} from extension...")
+                        batch = self.pipeline.get_batch_from_ext()
+                        #print(f"Putting batch {self.batch_number} to queue...", end='')
+                        self.pipeline.put_batch(batch)
+                        #print(" Put.")
+                        self.batch_number += 1
+
                 # update counters
                 examples_read += n_examples
-                #print("examples_read:", examples_read)
-                #print(f"{self.name} has processed {self.examples_processed} examples")
                 self.hdf5_file_index += 1
 
                 # check whether we have processed enough
-                assert examples_read <= examples_to_read,\
-                       f"have processed {examples_read} examples but {examples_to_read} examples were requested"
                 if examples_read == examples_to_read:
-                    # we should break
+                    # read enough examples, stopped partway through file
+                    #print(f"Read {examples_read} examples from file {self.hdf5_file_list_index}.")
+                    self.pipeline.set_finished_reading()
+                    while self.molecule_pipeline.any_batch_coming():
+                        #time.sleep(2)
+                        #print(f"Molecule queue: {self.molecule_pipeline.molecule_queue_size()}")
+                        #print(f"Example queue: {self.molecule_pipeline.example_queue_size()}")
+                        #print(f"Batch queue: {self.molecule_pipeline.batch_queue_size()}")
+                        #print(f"Num example: {self.molecule_pipeline.num_example()}")
+                        #print(f"Num batch: {self.molecule_pipeline.num_batch()}\n")
+                        #print(f"Getting batch {self.batch_number} from extension...")
+                        batch = self.pipeline.get_batch_from_ext()
+                        #print(f"Putting batch {self.batch_number} to queue...", end='')
+                        self.pipeline.put_batch(batch)
+                        #print(" Put.")
+                        self.batch_number += 1
                     return examples_read
 
-            if self.hdf5_file_index >= len(h5_keys):
-                self.hdf5_file_list_index += 1
-                self.hdf5_file_index = 0
-
-        # we didn't reach the desired number of examples
+        # reached end of file without enough examples
+        #print(f"Finished reading file {self.hdf5_file_list_index} with {examples_read} examples.")
+        self.hdf5_file_list_index += 1
+        self.hdf5_file_index = 0
         return examples_read
 
 # method that takes Molecules from a queue (molecule_queue) and places
@@ -336,7 +418,7 @@ def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
         molecule = pipeline.get_molecule()
         #print(f"> got molecule {molecule.name}, n_examples={len(molecule.perturbed_geometries)}")
         assert isinstance(molecule, Molecule), \
-               f"expected Molecule but got {type(work)} instead!"
+               f"expected Molecule but got {type(molecule)} instead!"
 
         features = torch.tensor(molecule.features, dtype=torch.float64)
         weights = torch.tensor(molecule.weights, dtype=torch.float64)
@@ -348,4 +430,69 @@ def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
                                   self_interaction=True, name=molecule.name,
                                   weights=weights, y=s, Rs_out=Rs_out)
             pipeline.put_data_neighbor(dn)
+
+position_tolerance = .00001
+shielding_tolerance = .000001
+# compares two different data neighbors structures (presumably generated in python and c++)
+# confirmed: C++ pipeline produces equivalent results to DataNeighbors 
+def compare_data_neighbors(dn1, dn2):
+    print("Comparing pair of Data Neighbors structures...")
+    if dn1.pos.shape[0] != dn2.pos.shape[0]:
+        raise ValueError(f"Different numbers of atoms! {dn1.pos.shape[0]} vs {dn2.pos.shape[0]}")
+    n_atoms = dn1.pos.shape[0]
+    print(f"Comparing {n_atoms} atoms...")
+    atom_map = [0] * n_atoms
+    atom_taken = [False] * n_atoms
+    for i in range(n_atoms):
+        for j in range(n_atoms):
+            if (not atom_taken[j]) and (torch.norm(dn1.pos[i,:] - dn2.pos[j,:]) <= position_tolerance):
+                atom_map[i] = j
+                atom_taken[j] = True
+                if not torch.equal(dn1.x[i], dn2.x[j]):
+                    print(f"1-hots don't match for atom {i}!")
+                    raise ValueError()
+                if abs(dn1.y[i] - dn2.y[j]) > shielding_tolerance:
+                    print(f"Shieldings don't match for atom {j}! {dn1.y[i]} vs {dn2.y[j]}")
+                    raise ValueError()
+                break
+        else:
+            print(f"Could not match atom {i}!")
+            raise ValueError()
+    print(f"Matched {n_atoms} atoms.  atom_map: ", atom_map)
+
+    if dn1.edge_attr.shape[0] != dn2.edge_attr.shape[0]:
+        raise ValueError(f"Different numbers of edges! {dn1.edge_attr.shape[0]} vs {dn2.edge_attr.shape[0]}")
+    n_edges = dn1.edge_attr.shape[0]
+    print(f"Comparing {n_edges} edges...")
+    edge_taken = [False] * n_edges
+    for a in range(n_edges):
+        e1 = torch.tensor([atom_map[dn1.edge_index[0,a]], atom_map[dn1.edge_index[1,a]]])
+        for b in range(n_edges):
+            if edge_taken[b]: continue
+            e2 = dn2.edge_index[:,b]
+            if torch.equal(e1, e2):
+                if torch.norm(dn1.edge_attr[a,:] - dn2.edge_attr[b,:]) > position_tolerance:
+                    print(f"Vectors don't match for edges {a} and {b} : ({dn1.edge_index[0,a]}) -> ({dn1.edge_index[1,a]})")
+                    print(f"{dn1.edge_attr[a,:]} vs { dn2.edge_attr[b,:]}")
+                    raise ValueError()
+                edge_taken[b] = True
+                break
+        else:
+            print(f"Could not match edge {a}!")
+            raise ValueError()
+    print(f"Matched {n_edges} edges.")
+
+    print("Data Neighbors matched!")
+
+def test_data_neighbors(example, Rs_in, Rs_out, max_radius, molecule_dict):
+    dn1 = example
+    molecule = molecule_dict[dn1.name]
+    features = torch.tensor(molecule.features, dtype=torch.float64)
+    weights = torch.tensor(molecule.weights, dtype=torch.float64)
+    g = torch.tensor(molecule.perturbed_geometries[0,:,:], dtype=torch.float64)
+    s = torch.tensor(molecule.perturbed_shieldings[0], dtype=torch.float64).unsqueeze(-1)  # [1,N]
+    dn2 = dh.DataNeighbors(x=features, Rs_in=Rs_in, pos=g, r_max=max_radius,
+            self_interaction=True, name=molecule.name, weights=weights, y=s, Rs_out=Rs_out)
+    compare_data_neighbors(dn1, dn2)
+
 
