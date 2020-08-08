@@ -22,13 +22,15 @@ PyObject* molecule_pipeline_ext_newBatchGenerator(PyObject* self, PyObject* args
 	static char* keywords[] = {"batch_size", "max_radius", "feature_size", "output_size", "num_threads", "molecule_cap", "example_cap", "batch_cap", "go", NULL };
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ifiiiiii|p", keywords, &batch_size, &max_radius, &feature_size, &output_size, &num_threads, &molecule_cap, &example_cap, &batch_cap, &go))
 		return NULL;
-	//printf("PyCpp return_model = %d\n", return_model);
 
-	return (PyObject *) PyCapsule_New(new BatchGenerator(batch_size, max_radius, feature_size, output_size, num_threads, molecule_cap, example_cap, batch_cap, go), "BatchGenerator", (PyCapsule_Destructor)delete_BatchGenerator);
+	//printf("Building BatchGenerator...\n");
+	//printf(" -- Feature size: %i floats, %i bytes\n", feature_size, feature_size * sizeof(ftype));
+
+	return (PyObject *) PyCapsule_New(new BatchGenerator(batch_size, max_radius, feature_size * sizeof(ftype), output_size * sizeof(ftype), num_threads, molecule_cap, example_cap, batch_cap, go), "BatchGenerator", (PyCapsule_Destructor)delete_BatchGenerator);
 }
 
 
-PyDoc_STRVAR(molecule_pipeline_ext_getNextBatch_doc, "(positions, features, output, weights, edge_indices, edge_vecs, name) = getNextBatch(batch_generator, block = True)");
+PyDoc_STRVAR(molecule_pipeline_ext_getNextBatch_doc, "(positions, features, output, weights, edge_indices, edge_vecs, name, n_examples) = getNextBatch(batch_generator, block = True)");
 PyObject* molecule_pipeline_ext_getNextBatch(PyObject* self, PyObject* args, PyObject* kwargs) {
 	PyObject *bgc;
 	bool block = true;
@@ -36,19 +38,22 @@ PyObject* molecule_pipeline_ext_getNextBatch(PyObject* self, PyObject* args, PyO
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|p", keywords, &bgc, &block))
 		return NULL;
 
+	//printf("Getting batch from C++ generator...\n");
+
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(bgc, "BatchGenerator");
 	Example *e = bg->getBatch(block);
 	if(e == NULL) Py_RETURN_NONE;
 
-	//npy_intp dims[2] = { get<1>(batch), 2 };
-	//printf("get<1>(batch) = %d\n", get<1>(batch));
+	//printf("Building NumPy arrays...\n");
+	//printf(" -- Feature size: %i bytes, %i floats\n", bg->feature_size, bg->feature_size / sizeof(ftype));
+
 	npy_intp pdim[2] = {e->num_atoms, 3};
 	PyArrayObject* positions = (PyArrayObject*)PyArray_SimpleNewFromData(2, pdim, NPY_FLOAT64, e->positions);
 	PyArray_ENABLEFLAGS(positions, NPY_OWNDATA);
-	npy_intp fdim[2] = {e->num_atoms, bg->feature_size / 8};
+	npy_intp fdim[2] = {e->num_atoms, bg->feature_size / sizeof(ftype)};
 	PyArrayObject* features = (PyArrayObject*)PyArray_SimpleNewFromData(2, fdim, NPY_FLOAT64, e->features);
 	PyArray_ENABLEFLAGS(features, NPY_OWNDATA);
-	npy_intp odim[2] = {e->num_atoms, bg->output_size / 8};
+	npy_intp odim[2] = {e->num_atoms, bg->output_size / sizeof(ftype)};
 	PyArrayObject* output = (PyArrayObject*)PyArray_SimpleNewFromData(2, odim, NPY_FLOAT64, e->output);
 	PyArray_ENABLEFLAGS(output, NPY_OWNDATA);
 	npy_intp wdim[1] = {e->num_atoms};
@@ -62,7 +67,9 @@ PyObject* molecule_pipeline_ext_getNextBatch(PyObject* self, PyObject* args, PyO
 	PyArrayObject* edge_vecs = (PyArrayObject*)PyArray_SimpleNewFromData(2, evdim, NPY_FLOAT64, e->edge_vecs);
 	PyArray_ENABLEFLAGS(edge_vecs, NPY_OWNDATA);
 
-	PyObject *r = Py_BuildValue("NNNNNNs", positions, features, output, weights, edge_indices, edge_vecs, e->name.c_str());
+	//printf("Returning batch from C++...\n");
+
+	PyObject *r = Py_BuildValue("NNNNNNsi", positions, features, output, weights, edge_indices, edge_vecs, e->name.c_str(), e->n_examples);
 	e->releaseBuffers();
 	delete e;
 	return r;
@@ -72,6 +79,42 @@ PyDoc_STRVAR(molecule_pipeline_ext_batchReady_doc, "batchReady(batch_generator)"
 PyObject* molecule_pipeline_ext_batchReady(PyObject* self, PyObject* bgc) {
 	BatchGenerator* bg = (BatchGenerator*)PyCapsule_GetPointer(bgc, "BatchGenerator");
 	return Py_BuildValue("O", bg->batchReady() ? Py_True : Py_False);
+}
+
+PyDoc_STRVAR(molecule_pipeline_ext_anyBatchComing_doc, "anyBatchComing(batch_generator)");
+PyObject* molecule_pipeline_ext_anyBatchComing(PyObject* self, PyObject* bgc) {
+	BatchGenerator* bg = (BatchGenerator*)PyCapsule_GetPointer(bgc, "BatchGenerator");
+	return Py_BuildValue("O", bg->anyBatchComing() ? Py_True : Py_False);
+}
+
+PyDoc_STRVAR(molecule_pipeline_ext_moleculeQueueSize_doc, "moleculeQueueSize(batch_generator)");
+PyObject* molecule_pipeline_ext_moleculeQueueSize(PyObject* self, PyObject* bgc) {
+	BatchGenerator* bg = (BatchGenerator*)PyCapsule_GetPointer(bgc, "BatchGenerator");
+	return Py_BuildValue("i", bg->moleculeQueueSize());
+}
+
+PyDoc_STRVAR(molecule_pipeline_ext_exampleQueueSize_doc, "exampleQueueSize(batch_generator)");
+PyObject* molecule_pipeline_ext_exampleQueueSize(PyObject* self, PyObject* bgc) {
+	BatchGenerator* bg = (BatchGenerator*)PyCapsule_GetPointer(bgc, "BatchGenerator");
+	return Py_BuildValue("i", bg->exampleQueueSize());
+}
+
+PyDoc_STRVAR(molecule_pipeline_ext_batchQueueSize_doc, "batchQueueSize(batch_generator)");
+PyObject* molecule_pipeline_ext_batchQueueSize(PyObject* self, PyObject* bgc) {
+	BatchGenerator* bg = (BatchGenerator*)PyCapsule_GetPointer(bgc, "BatchGenerator");
+	return Py_BuildValue("i", bg->batchQueueSize());
+}
+
+PyDoc_STRVAR(molecule_pipeline_ext_numExample_doc, "numExample(batch_generator)");
+PyObject* molecule_pipeline_ext_numExample(PyObject* self, PyObject* bgc) {
+	BatchGenerator* bg = (BatchGenerator*)PyCapsule_GetPointer(bgc, "BatchGenerator");
+	return Py_BuildValue("i", bg->numExample());
+}
+
+PyDoc_STRVAR(molecule_pipeline_ext_numBatch_doc, "numBatch(batch_generator)");
+PyObject* molecule_pipeline_ext_numBatch(PyObject* self, PyObject* bgc) {
+	BatchGenerator* bg = (BatchGenerator*)PyCapsule_GetPointer(bgc, "BatchGenerator");
+	return Py_BuildValue("i", bg->numBatch());
 }
 
 PyDoc_STRVAR(molecule_pipeline_ext_notifyStarting_doc, "notifyStarting(batch_generator, batch_size = -1)");
@@ -105,6 +148,13 @@ PyObject* molecule_pipeline_ext_putMolecule(PyObject* self, PyObject* args, PyOb
 		return NULL;
 	BatchGenerator *bg = (BatchGenerator*)PyCapsule_GetPointer(capsule, "BatchGenerator");
 
+	//First flush the deletion queue, since we have the GIL
+	while(bg->deletion_queue.size() > 0) delete bg->deletion_queue.pop();
+
+	//printf("Putting molecule ");
+	//printf(name);
+	//printf("...\n");
+
 	positions = (PyArrayObject*)PyArray_FROM_OTF((PyObject*)positions, NPY_FLOAT64, NPY_ARRAY_IN_ARRAY);
 	features = (PyArrayObject*)PyArray_FROM_OTF((PyObject*)features, NPY_FLOAT64, NPY_ARRAY_IN_ARRAY);
 	output = (PyArrayObject*)PyArray_FROM_OTF((PyObject*)output, NPY_FLOAT64, NPY_ARRAY_IN_ARRAY);
@@ -116,6 +166,7 @@ PyObject* molecule_pipeline_ext_putMolecule(PyObject* self, PyObject* args, PyOb
 	Molecule *m = new Molecule(num_examples, num_atoms, positions, features, output, weights, string(name));
 
 	bool r = bg->putMolecule(m, block);
+	if(!r) delete m;
 
 	return Py_BuildValue("O", r ? Py_True : Py_False);
 }
@@ -124,11 +175,17 @@ PyObject* molecule_pipeline_ext_putMolecule(PyObject* self, PyObject* args, PyOb
 /*
  * List of functions to add to molecule_pipeline_ext in exec_molecule_pipeline_ext().
  */
-static PyMethodDef molecule_pipeline_ext_functions[] = {
+static PyMethodDef molecule_pipeline_ext_functions[] = { 
 	{ "newBatchGenerator", (PyCFunction)molecule_pipeline_ext_newBatchGenerator, METH_VARARGS | METH_KEYWORDS, molecule_pipeline_ext_newBatchGenerator_doc },
 	{ "getNextBatch", (PyCFunction)molecule_pipeline_ext_getNextBatch, METH_VARARGS | METH_KEYWORDS, molecule_pipeline_ext_getNextBatch_doc },
 	{ "putMolecule", (PyCFunction)molecule_pipeline_ext_putMolecule, METH_VARARGS | METH_KEYWORDS, molecule_pipeline_ext_putMolecule_doc },
 	{ "batchReady", (PyCFunction)molecule_pipeline_ext_batchReady, METH_O, molecule_pipeline_ext_batchReady_doc },
+	{ "anyBatchComing", (PyCFunction)molecule_pipeline_ext_anyBatchComing, METH_O, molecule_pipeline_ext_anyBatchComing_doc },
+	{ "moleculeQueueSize", (PyCFunction)molecule_pipeline_ext_moleculeQueueSize, METH_O, molecule_pipeline_ext_moleculeQueueSize_doc },
+	{ "exampleQueueSize", (PyCFunction)molecule_pipeline_ext_exampleQueueSize, METH_O, molecule_pipeline_ext_exampleQueueSize_doc },
+	{ "batchQueueSize", (PyCFunction)molecule_pipeline_ext_batchQueueSize, METH_O, molecule_pipeline_ext_batchQueueSize_doc },
+	{ "numExample", (PyCFunction)molecule_pipeline_ext_numExample, METH_O, molecule_pipeline_ext_numExample_doc },
+	{ "numBatch", (PyCFunction)molecule_pipeline_ext_numBatch, METH_O, molecule_pipeline_ext_numBatch_doc },
 	{ "notifyStarting", (PyCFunction)molecule_pipeline_ext_notifyStarting, METH_VARARGS | METH_KEYWORDS, molecule_pipeline_ext_notifyStarting_doc },
 	{ "notifyFinished", (PyCFunction)molecule_pipeline_ext_notifyFinished, METH_O, molecule_pipeline_ext_notifyFinished_doc },
 	{ NULL, NULL, 0, NULL } /* marks end of array */

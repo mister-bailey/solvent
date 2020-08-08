@@ -21,9 +21,9 @@ Molecule::~Molecule(){
 }
 
 Example::Example(int num_atoms, vec3 *positions, void *features, void *output, ftype *weights,
-            int num_edges, pair<itype,itype> *edge_indices, vec3 *edge_vecs, string name) :
+            int num_edges, pair<itype,itype> *edge_indices, vec3 *edge_vecs, string name, int n_examples) :
             num_atoms(num_atoms), positions(positions), features(features), output(output), weights(weights),
-            num_edges(num_edges), edge_indices(edge_indices), edge_vecs(edge_vecs), name(name) {
+            num_edges(num_edges), edge_indices(edge_indices), edge_vecs(edge_vecs), name(name), n_examples(n_examples) {
 }
 
 Example::~Example(){
@@ -64,6 +64,7 @@ void BatchGenerator::processMolecule(Molecule *m) {
                 if(norm2(d) <= max_r2) num_edges++;
             }
         }
+        
         pair<itype,itype> *edge_indices;
         vec3 *edge_vecs;
         {MEMSAFE edge_indices = (pair<itype,itype> *)malloc(num_edges * sizeof(pair<itype,itype>));}
@@ -75,6 +76,7 @@ void BatchGenerator::processMolecule(Molecule *m) {
                 if(norm2(d) > max_r2) continue;
                 edge_indices[edge] = {a,b};
                 edge_vecs[edge] = d;
+                edge++;
             }
         }
 
@@ -88,15 +90,17 @@ void BatchGenerator::processMolecule(Molecule *m) {
 
         example_queue.push(example);
         pos = (vec3 *)((char *)pos + tot_psize);
-        feat = (char *)feat + tot_fsize;
+        //feat = (char *)feat + tot_fsize;
         out = (char *)out + tot_ysize;
     }
-    delete m;
+    deletion_queue.push(m);
 }
 
 void BatchGenerator::loopProcessMolecules(int max){
     for(int i=0; i != max && !end; i++){
+        //printf("m.pop\n");
         Molecule *m = molecule_queue.pop();
+        //printf("m.process\n");
         processMolecule(m);
     }
 }
@@ -117,7 +121,7 @@ Example *BatchGenerator::makeBatch() {
     examples.reserve(batch_size);
     int total_atoms = 0;
     int total_edges = 0;
-    while(anyExComing() && examples.size() < batch_size){
+    while(examples.size() < batch_size && anyExComing()){
         Example *e = example_queue.pop();
         if(e == NULL) break;
         {
@@ -163,20 +167,16 @@ Example *BatchGenerator::makeBatch() {
         edge_tally += num_edges;
         {MEMSAFE delete e;}
     }
-	
+
     {MEMSAFE return new Example(total_atoms, positions, features, output, weights,
-            total_edges, edge_indices, edge_vecs, name);}
+            total_edges, edge_indices, edge_vecs, name, examples.size());}
 }
 
 void BatchGenerator::loopMakeBatches(int max) {
 	for(int i=0; i != max && !end; i++) {
-        {
-            unique_lock<mutex> ssl(start_stop_mutex);
-
-        }
+        waitTillExComing();
         {
             unique_lock<mutex> bl(batch_count_mutex);
-            while(!anyExComing()) restart_cond.wait(bl);
             num_batch++;
         }
         batch_queue.push(makeBatch());
@@ -187,6 +187,11 @@ bool BatchGenerator::anyExComing(){
     unique_lock<mutex> lock(ex_count_mutex);
     while(!knows_ex_coming) know_cond.wait(lock);
     return num_ex > 0;
+}
+
+void BatchGenerator::waitTillExComing(){
+    unique_lock<mutex> lock(ex_count_mutex);
+    while(!knows_ex_coming || num_ex == 0) know_cond.wait(lock);
 }
 
 bool BatchGenerator::anyBatchComing(){
@@ -226,7 +231,8 @@ void BatchGenerator::notifyStarting(int bs){
     knows_ex_coming = false;
     finished_reading = false;
     if(bs > 0) batch_size = bs;
-    restart_cond.notify_all();
+    know_cond.notify_all();
+    //restart_cond.notify_all();
 }
 
 void BatchGenerator::notifyFinished(){
@@ -234,6 +240,27 @@ void BatchGenerator::notifyFinished(){
     knows_ex_coming = true;
     finished_reading = true;
     know_cond.notify_all();
+    //restart_cond.notify_all();
+}
+
+int BatchGenerator::moleculeQueueSize(){
+    return molecule_queue.size();
+}
+int BatchGenerator::exampleQueueSize(){
+    return example_queue.size();
+}
+int BatchGenerator::batchQueueSize(){
+    return batch_queue.size();
+}
+
+int BatchGenerator::numExample(){
+    unique_lock<mutex> lock(ex_count_mutex);
+    return num_ex;
+}
+
+int BatchGenerator::numBatch(){
+    unique_lock<mutex> bl(batch_count_mutex);
+    return num_batch;
 }
 
 /*void BatchGenerator::start() {
@@ -257,13 +284,9 @@ BatchGenerator::BatchGenerator(int batch_size, float max_radius, int feature_siz
         batch_queue(batch_cap),
         go(go)
 {
-    //printf("1000\n");
 	molecule_threads.reserve(num_threads);
-    //printf("2000\n");
     for(int i=0; i < num_threads; i++) molecule_threads.push_back(thread(moleculeThreadRun, this));
-    //printf("3000\n");
     batch_thread = thread(batchThreadRun, this);
-    //printf("4000\n");
 }
 
 // Badly designed destructor. Doesn't properly clean things up. Just detaches threads and hopes for

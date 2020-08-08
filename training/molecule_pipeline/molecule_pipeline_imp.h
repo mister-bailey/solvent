@@ -15,11 +15,12 @@ Copyright Michael Bailey 2020
 #include <string>
 //#include <Python.h>
 #include <arrayobject.h>
+#include <stdint.h>
 
 #define MEMSAFE lock_guard<mutex> lg(alloc_mutex); //if(this->end) return;
 
-#define ftype double
-#define itype long
+#define ftype double //NPY_FLOAT64
+#define itype int64_t
 #define vec3 tuple<ftype,ftype,ftype>
 #define data(aop) PyArray_DATA(aop)
 #define data3(aop) (vec3 *)PyArray_DATA(aop)
@@ -70,9 +71,10 @@ public:
     pair<itype,itype> *edge_indices;
     vec3 *edge_vecs;
     string name;
+    int n_examples = 1;
 
     Example(int num_atoms, vec3 *positions, void *features, void *output, ftype *weights,
-            int num_edges, pair<itype,itype> *edge_indices, vec3 *edge_vecs, string name="");
+            int num_edges, pair<itype,itype> *edge_indices, vec3 *edge_vecs, string name="", int n_examples=1);
     ~Example();
     void releaseBuffers();
 };
@@ -146,10 +148,11 @@ class BatchGenerator {
     mutex batch_count_mutex;
     int num_batch = 0;
     bool finished_reading = false;
-    condition_variable restart_cond;
+    //condition_variable restart_cond;
 
 
     bool anyExComing();
+    void waitTillExComing();
 
     ftype max_radius;
 
@@ -178,8 +181,16 @@ public:
     bool batchReady();
     Example *getBatch(bool block=true);
 
-	void start();
-	void stop();
+	//void start();
+	//void stop();
+
+    int moleculeQueueSize();
+    int exampleQueueSize();
+    int batchQueueSize();
+    int numExample();
+    int numBatch();
+
+    SynchronisedQueue<Molecule *> deletion_queue;
 
 	//int
 };
