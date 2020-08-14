@@ -20,6 +20,9 @@ from molecule_pipeline import ExampleBatch
 
 ### Code to Generate Molecules ###
 
+symbol_to_number = training_config.symbol_to_number
+number_to_symbol = training_config.number_to_symbol
+
 # all expected elements
 all_elements = training_config.all_elements
 n_elements = len(all_elements)
@@ -88,7 +91,7 @@ class TrainingHistory():
         # detailed residual stats for test set
         self.residuals_by_molecule = None   # { molecule name : residuals (n_examples,n_atoms) }
         self.residuals_by_site_label = None # { molecule name : residuals }
-        self.stats_by_element = None        # { element symbol : (mean error, RMSE) }
+        self.stats_by_element = None        # { atomic number : (mean error, RMSE) }
 
     def print_training_status_update(self, epoch, minibatch, n_minibatches, t_wait, q1, q2):
         losses = np.array(self.minibatch_loss_buffer)
@@ -251,12 +254,11 @@ def compute_testing_loss(model, testing_batches, training_history, molecules_dic
     for name, results in residuals_by_molecule.items():
         results = np.array(results).T
         molecule = molecules_dict[name]
-        atomic_symbols = molecule.atomic_symbols
         for atomic_index, this_result in enumerate(results):
-            element = atomic_symbols[atomic_index]
+            element = molecule.atomic_numbers[atomic_index]
             if element not in relevant_elements:
                 continue
-            site_label = "f{name}_{element}{atomic_index+1}"
+            site_label = "f{name}_{number_to_symbol[element]}{atomic_index+1}"
             residuals_by_site_label[site_label] = this_result
             all_residuals[element].extend(this_result)
 
@@ -277,5 +279,5 @@ def compute_testing_loss(model, testing_batches, training_history, molecules_dic
     print(f"           testing_loss = {testing_loss:10.3f}   t_test = {elapsed:.2f} s                                        ")
     print("          means / RMSEs =   ", end="")
     for element, (mean_error,RMSE) in stats_by_element.items():
-        print(f"{element} : {mean_error:.3f} / {RMSE:.3f}    ", end="")
+        print(f"{number_to_symbol[element]} : {mean_error:.3f} / {RMSE:.3f}    ", end="")
     print(flush=True)

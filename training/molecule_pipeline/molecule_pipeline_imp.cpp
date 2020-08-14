@@ -13,6 +13,26 @@ Molecule::Molecule(int num_examples, int num_atoms, PyArrayObject *positions, Py
             {   
 }
 
+Molecule::Molecule(int num_examples, int num_atoms, PyArrayObject *positions, const itype *elements,
+            PyArrayObject *output, PyArrayObject * weights, string name) :
+            num_examples(num_examples), num_atoms(num_atoms), positions(positions),
+            output(output), weights(weights), name(name) {
+    printf("Constructing molecule from data A\n");
+    npy_intp fdim[2] = {num_atoms, BatchGenerator::num_elements};
+    printf("Constructing molecule from data B\n");
+    features = (PyArrayObject *)PyArray_ZEROS(2, fdim, NPY_FLOAT64, 0);
+    printf("Constructing molecule from data C\n");
+    ftype *fdata = (ftype *)PyArray_DATA(features);
+    printf("Constructing molecule from data D ");
+    for(int a = 0; a < num_atoms; a++, fdata += BatchGenerator::num_elements){
+        printf("%d ",a);
+        int atomic_number = elements[a];
+        fdata[BatchGenerator::element_map[atomic_number]] = 1;
+        if(!BatchGenerator::relevant_elements.count(atomic_number)) ((ftype *)PyArray_DATA(weights))[a] = 0;
+    }        
+    printf("\nConstructing molecule from data - Finished\n");
+}
+
 Molecule::~Molecule(){
     Py_DECREF(positions);
     Py_DECREF(features);
@@ -43,6 +63,11 @@ void Example::releaseBuffers(){
     edge_indices = NULL;
     edge_vecs = NULL;
 }
+
+int BatchGenerator::num_elements;
+map<int, int> BatchGenerator::element_map;
+set<int> BatchGenerator::relevant_elements;
+
 
 void BatchGenerator::processMolecule(Molecule *m) {
     ftype max_r2 = max_radius * max_radius;
@@ -97,7 +122,7 @@ void BatchGenerator::processMolecule(Molecule *m) {
 }
 
 void BatchGenerator::loopProcessMolecules(int max){
-    for(int i=0; i != max && !end; i++){
+    for(int i=0; i != max; i++){
         //printf("m.pop\n");
         Molecule *m = molecule_queue.pop();
         //printf("m.process\n");
@@ -173,7 +198,7 @@ Example *BatchGenerator::makeBatch() {
 }
 
 void BatchGenerator::loopMakeBatches(int max) {
-	for(int i=0; i != max && !end; i++) {
+	for(int i=0; i != max; i++) {
         waitTillExComing();
         {
             unique_lock<mutex> bl(batch_count_mutex);
@@ -263,27 +288,33 @@ int BatchGenerator::numBatch(){
     return num_batch;
 }
 
-/*void BatchGenerator::start() {
-	unique_lock<mutex> lk(small_mutex);
-	go = true;
-	lk.unlock();
-	rw_cond.notify_all();
+void BatchGenerator::buildElementMap(vector<int> elements, vector<int> relevant_elements){
+    for(int re : relevant_elements) this->relevant_elements.insert(re);
+    num_elements = elements.size();
+    //one_hots = (ftype *)calloc(num_elements * num_elements, sizeof(ftype));
+    for(int i=0; i < num_elements; i++) element_map[elements[i]] = i;
 }
-void BatchGenerator::stop() {
-	unique_lock<mutex> lk(small_mutex);
-	go = false;
-	lk.unlock();
-	rw_cond.notify_all();
-}*/
 
 BatchGenerator::BatchGenerator(int batch_size, float max_radius, int feature_size, int output_size,
-        int num_threads, int molecule_cap, int example_cap, int batch_cap, bool go) : 
+        int num_threads, int molecule_cap, int example_cap, int batch_cap) : 
         max_radius(max_radius), feature_size(feature_size), output_size(output_size),
         molecule_queue(molecule_cap),
         example_queue(example_cap), 
-        batch_queue(batch_cap),
-        go(go)
+        batch_queue(batch_cap)
 {
+	molecule_threads.reserve(num_threads);
+    for(int i=0; i < num_threads; i++) molecule_threads.push_back(thread(moleculeThreadRun, this));
+    batch_thread = thread(batchThreadRun, this);
+}
+
+BatchGenerator::BatchGenerator(int batch_size, float max_radius, vector<int> elements, vector<int> relevant_elements,
+        int num_threads, int molecule_cap, int example_cap, int batch_cap) : 
+        max_radius(max_radius), feature_size(elements.size() * sizeof(ftype)), output_size(sizeof(ftype)),
+        molecule_queue(molecule_cap),
+        example_queue(example_cap), 
+        batch_queue(batch_cap)
+{
+    buildElementMap(elements, relevant_elements);
 	molecule_threads.reserve(num_threads);
     for(int i=0; i < num_threads; i++) molecule_threads.push_back(thread(moleculeThreadRun, this));
     batch_thread = thread(batchThreadRun, this);
@@ -292,10 +323,6 @@ BatchGenerator::BatchGenerator(int batch_size, float max_radius, int feature_siz
 // Badly designed destructor. Doesn't properly clean things up. Just detaches threads and hopes for
 // the best. Only intended to be run at program termination.
 BatchGenerator::~BatchGenerator() {
-	{
-        unique_lock<mutex> lock(start_stop_mutex);
-	    end = true;
-    }
 	for(auto &t : molecule_threads) t.detach();
     batch_thread.detach();
 }

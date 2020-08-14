@@ -23,13 +23,31 @@ def parse_list(s, separator=",", func=None):
 # where to do the training
 device = config['general']['device']
 
+symbol_to_number = {}
+number_to_symbol = {}
+# dictionary between symbols and numbers
+#print("Building atomic symbol dictionary...")
+for symbol, num_str in config.items('symbols_numbers_dict'):
+    num = int(num_str)
+    symbol = symbol.upper()
+#    print(f"{symbol} = {num}")
+    symbol_to_number[symbol] = num
+    number_to_symbol[num] = symbol
+
+def atomic_number(e):
+    if isinstance(e, str):
+        if e.isnumeric(): return int(e)
+        return symbol_to_number[e]
+    else:
+        return e
+
 # all expected elements
-all_elements = parse_list(config['general']['all_elements'])
+all_elements = [atomic_number(e) for e in parse_list(config['general']['all_elements'])]
 assert len(all_elements) == len(set(all_elements)), "duplicate element"
 n_elements = len(all_elements)
 
 # which elements to predict NMR shieldings for
-relevant_elements = parse_list(config['general']['relevant_elements'])
+relevant_elements = [atomic_number(e) for e in parse_list(config['general']['relevant_elements'])]
 for e in relevant_elements:
     assert e in all_elements, f"relevant element {e} not found in all_elements"
 assert len(relevant_elements) == len(set(relevant_elements)), "duplicate element"
@@ -37,6 +55,7 @@ assert len(relevant_elements) == len(set(relevant_elements)), "duplicate element
 # where the raw data are stored
 hdf5_filenames = list(sorted(glob(config['data']['hdf5_filenames'])))
 assert len(hdf5_filenames) > 0, "no files found!"
+file_format = int(config['data']['file_format'])
 
 # how many jiggles to get per file
 # this is not checked--requesting an invalid number will cause a runtime error

@@ -16,6 +16,8 @@ Copyright Michael Bailey 2020
 //#include <Python.h>
 #include <arrayobject.h>
 #include <stdint.h>
+#include <map>
+#include <set>
 
 #define MEMSAFE lock_guard<mutex> lg(alloc_mutex); //if(this->end) return;
 
@@ -44,8 +46,6 @@ class Molecule {
 public:
     int num_examples;
     int num_atoms;
-    /*int feature_size;
-    int output_size;*/
     PyArrayObject *positions;
     PyArrayObject *features;
     PyArrayObject *output;
@@ -54,6 +54,9 @@ public:
 
     Molecule(int num_examples, int num_atoms, PyArrayObject *positions,
             PyArrayObject *features, PyArrayObject *output, PyArrayObject *weights, string name="");
+
+    Molecule(int num_examples, int num_atoms, PyArrayObject *positions,
+            const itype *elements, PyArrayObject *output, PyArrayObject *weights, string name="");
 
     ~Molecule();
 };
@@ -129,17 +132,10 @@ class BatchGenerator {
     SynchronisedQueue<Example *> example_queue;
     SynchronisedQueue<Example *> batch_queue;
 
-	int batch_read = 0;
-	int batch_write = 0;
-	int batches_ahead = 2;
-
 	vector<thread> molecule_threads;
     thread batch_thread;
 
 	mutex alloc_mutex;
-	bool go = true;
-    mutex start_stop_mutex;
-	bool end = false;
 
     mutex ex_count_mutex;
     bool knows_ex_coming = false;
@@ -148,8 +144,8 @@ class BatchGenerator {
     mutex batch_count_mutex;
     int num_batch = 0;
     bool finished_reading = false;
-    //condition_variable restart_cond;
 
+    void buildElementMap(vector<int> elements, vector<int> relevant_elements);
 
     bool anyExComing();
     void waitTillExComing();
@@ -165,6 +161,10 @@ public:
     int feature_size;
     int output_size;
 
+    static int num_elements;
+    static map<int, int> element_map;
+    static set<int> relevant_elements;
+
 	//static BatchGenerator* makeBatchGenerator();
 	static void batchThreadRun(BatchGenerator* bg);
     static void moleculeThreadRun(BatchGenerator* bg);
@@ -174,7 +174,9 @@ public:
     bool anyBatchComing();
 
 	BatchGenerator(int batch_size, float max_radius, int feature_size, int output_size, int num_threads, int molecule_cap,
-            int example_cap, int batch_cap, bool go = true);
+            int example_cap, int batch_cap);
+	BatchGenerator(int batch_size, float max_radius, vector<int> elements, vector<int> relevant_elements, int num_threads, int molecule_cap,
+            int example_cap, int batch_cap);
 	~BatchGenerator();
 
     bool putMolecule(Molecule *molecule, bool block=true);

@@ -38,8 +38,15 @@ class ExampleBatch():
 class MoleculePipeline():
     def __init__(self, batch_size, max_radius, feature_size, output_size, num_threads = 2,
             molecule_cap = 10000, example_cap = 10000, batch_cap = 100):
-        self.capsule = molecule_pipeline_ext.newBatchGenerator(batch_size, max_radius, feature_size,
-            output_size, num_threads, molecule_cap, example_cap, batch_cap)
+        if isinstance(feature_size, int):
+            self.capsule = molecule_pipeline_ext.newBatchGenerator(batch_size, max_radius, feature_size,
+                    output_size, num_threads, molecule_cap, example_cap, batch_cap)
+        else:
+            self.capsule = molecule_pipeline_ext.newBatchGeneratorElements(batch_size, max_radius, feature_size,
+                    output_size, num_threads, molecule_cap, example_cap, batch_cap)
+            feature_size = len(feature_size)
+            output_size = 1
+
         self.batch_size = batch_size
         self.max_radius = max_radius
         self.feature_size = feature_size
@@ -58,12 +65,13 @@ class MoleculePipeline():
         molecule_pipeline_ext.notifyFinished(self.capsule)
         
     def put_molecule(self, m, block=True):
-        if molecule_pipeline_ext.putMolecule(self.capsule, m.perturbed_geometries, m.features,
-            m.perturbed_shieldings, m.weights, m.name, block):
-            #print(f"Put molecule {m.name}!")
-            return True
-        else:
-            return False
+        return molecule_pipeline_ext.putMolecule(self.capsule, m.perturbed_geometries, m.features,
+            m.perturbed_shieldings, m.weights, m.name, block)
+
+    # send data without first building a Molecule object.
+    # Send atomic numbers, and 1-hots will be computed in C++
+    def put_molecule_data(self, data, atomic_numbers, weights, name, block=True):
+        return molecule_pipeline_ext.putMoleculeData(self.capsule, data[...,:3], atomic_numbers, data[...,3], weights, name, block)
 
     def batch_ready(self):
         return molecule_pipeline_ext.batchReady(self.capsule)

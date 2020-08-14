@@ -18,6 +18,9 @@ import itertools
 
 ### Code to Generate Molecules ###
 
+symbol_to_number = training_config.symbol_to_number
+number_to_symbol = training_config.number_to_symbol
+
 # all expected elements
 all_elements = training_config.all_elements
 n_elements = len(all_elements)
@@ -31,28 +34,34 @@ device = training_config.device
 # other parameters
 n_norm = training_config.n_norm
 testing_size = training_config.testing_size
+file_format = training_config.file_format
 
 ### Code for Storing Training Data ###
 
 # represents a molecule and all its jiggled training examples 
 class Molecule():
     def __init__(self, name,
-                 atomic_symbols,
-                 symmetrical_atoms,        # list of lists of 0-indexed atom numbers
                  perturbed_geometries,
-                 perturbed_shieldings):
+                 perturbed_shieldings,
+                 atomic_numbers,
+                 symmetrical_atoms = None,        # list of lists of 0-indexed atom numbers
+                 weights = None):
         self.name = name                                       # name of molecule
-        self.atomic_symbols = atomic_symbols                   # vector of strings of length n_atoms
-        self.n_atoms = len(atomic_symbols)                     # number of atoms
+        self.atomic_numbers = atomic_numbers                   # vector of strings of length n_atoms
+        self.n_atoms = len(atomic_numbers)                     # number of atoms
         self.perturbed_geometries = perturbed_geometries       # (n_examples, n_atoms, 3)
 
         # zero out shieldings for irrelevant atoms
-        for i,a in enumerate(atomic_symbols):
+        for i,a in enumerate(atomic_numbers):
+            #if isinstance(a, str): a = symbol_to_number[a]
             if a not in relevant_elements:
-                perturbed_shieldings[:,i]=0.0
+                perturbed_shieldings[...,i]=0.0
         self.perturbed_shieldings = perturbed_shieldings                # (n_examples, n_atoms, 1)
-        self.features = get_one_hots(atomic_symbols)                    # (n_atoms, n_elements)
-        self.weights = get_weights(atomic_symbols, symmetrical_atoms)   # (n_atoms,)
+        self.features = get_one_hots(atomic_numbers)                    # (n_atoms, n_elements)
+        if weights is None:
+            self.weights = get_weights(atomic_numbers, symmetrical_atoms)   # (n_atoms,)
+        else:
+            self.weights = weights
 
 def str2array(s):
     # https://stackoverflow.com/questions/35612235/how-to-read-numpy-2d-array-from-string
@@ -68,10 +77,11 @@ def str2array(s):
         return a
 
 # generates one-hots for a list of atomic_symbols
-def get_one_hots(atomic_symbols):
+def get_one_hots(atomic_numbers):
     one_hots = []
-    for symbol in atomic_symbols:
-        inner_list = [ 1. if symbol == i else 0. for i in all_elements ]
+    for number in atomic_numbers:
+        number = training_config.atomic_number(number)
+        inner_list = [ 1. if number == i else 0. for i in all_elements ]
         one_hots.append(inner_list)
     return np.array(one_hots)
 
@@ -203,7 +213,23 @@ class Pipeline():
         with self.in_pipe.get_lock():
             if self.in_pipe.value == 0:
                 set_semaphore(self.knows, True)
-            self.in_pipe.value += m.perturbed_geometries.shape[0]
+            if m.perturbed_geometries.ndim == 3:
+                self.in_pipe.value += m.perturbed_geometries.shape[0]
+            else:
+                self.in_pipe.value += 1
+        return True
+
+    def put_molecule_data(self, data, atomic_numbers, weights, name, block=True):
+        r = self.molecule_pipeline.put_molecule_data(data, atomic_numbers, weights, name, block)
+        if not r:
+            return False
+        with self.in_pipe.get_lock():
+            if self.in_pipe.value == 0:
+                set_semaphore(self.knows, True)
+            if data.ndim == 3:
+                self.in_pipe.value += data.shape[0]
+            else:
+                self.in_pipe.value += 1
         return True
 
     def get_batch_from_ext(self, block=True):
@@ -220,15 +246,9 @@ class Pipeline():
         #print(f"*** self.knows = {check_semaphore(self.knows)} ***")
 
     def put_batch(self, x):
-        #self.batch_queue.put(DummyBatch(x.n_examples))
-        #return
         if self.share_batches:
             x.share_memory_()
         self.batch_queue.put(x)
-
-class DummyBatch():
-    def __init__(self, n_examples):
-        self.n_examples = n_examples
 
 class DatasetSignal():
     def __str__(self):
@@ -267,12 +287,13 @@ class DatasetReader(Process):
         self.requested_jiggles = requested_jiggles  # how many jiggles per file
         self.testing_molecules_dict = testing_molecules_dict   # molecule name -> Molecule
         self.molecule_pipeline = None
-        self.molecule_pipeline_args = (batch_size, max_radius, Rs_size(Rs_in),
-                    Rs_size(Rs_out), num_threads, molecule_cap, example_cap, batch_cap)
-        print("(batch_size, max_radius, x_size, y_size, num_threads, molecule_cap, example_cap, batch_cap)")
-        print(f" = {self.molecule_pipeline_args}")
-        self.batch_number = 0
+        self.molecule_pipeline_args = (batch_size, max_radius, all_elements,
+                    relevant_elements, num_threads, molecule_cap, example_cap, batch_cap)
         self.molecule_number = 0
+        if file_format == 0:
+            self.read_hdf5 = self.read_hdf5_format_0
+        elif file_format == 1:
+            self.read_hdf5 = self.read_hdf5_format_1
 
     # process the data in all hdf5 files
     def run(self):
@@ -289,11 +310,12 @@ class DatasetReader(Process):
                 self.hdf5_file_index = 0
                 #self.molecule_pipeline.notify_starting()
             elif isinstance(command, StartSignal):
-                self.batch_number = 0
                 self.molecule_number = 0
                 self.molecule_pipeline.notify_starting(command.batch_size)
                 self.read_examples(command.examples_to_read, command.make_molecules, command.record_in_dict)
                 self.pipeline.set_finished_reading()
+                while self.molecule_pipeline.any_batch_coming():
+                    self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
             else:
                 raise ValueError("unexpected work type")
             self.pipeline.working.release()
@@ -317,99 +339,107 @@ class DatasetReader(Process):
     # make_molecules: boolean that tells us if we should make Molecules objects
     #                 or just skip over these records
     # returns: number of molecules read from this file
-    def read_hdf5(self, filename, examples_to_read, make_molecules, record_in_dict):
+    def read_hdf5_format_0(self, filename, examples_to_read, make_molecules, record_in_dict):
         with h5py.File(filename, "r") as h5:
             h5_keys = (k for k in h5.keys() if k.startswith("data_"))
 
             examples_read = 0
             for dataset_name in itertools.islice(h5_keys, self.hdf5_file_index, None):
                 n_examples = min(examples_to_read - examples_read, self.requested_jiggles, h5[dataset_name].shape[0])
-                #print(f"Reading molecule {dataset_name}.")
                 if make_molecules:
                     geometries_and_shieldings = h5[dataset_name][:n_examples]
 
-                    #print("AAAAAAA")
                     assert np.shape(geometries_and_shieldings)[2] == 4, "should be x,y,z,shielding"
 
                     dataset_number = dataset_name.split("_")[1]
-
-                    #if isinstance(requested_jiggles, int):
-                    #    jiggles = list(range(requested_jiggles))
-                    #elif isinstance(requested_jiggles, list):
-                    #    jiggles = requested_jiggles
-
-                    #if jiggles_needed < len(jiggles):
-                    #    jiggles = jiggles[:jiggles_needed]
 
                     # NOTE: We don't split a single molecule between different batches!
                     perturbed_geometries = geometries_and_shieldings[:,:,:3]
                     perturbed_shieldings = geometries_and_shieldings[:,:,3]
                     n_atoms = perturbed_geometries.shape[1]
 
-                    #print("BBBBBBB")
-
                     atomic_symbols = h5.attrs[f"atomic_symbols_{dataset_number}"]
 
-                    #print("   BBBB")
                     assert len(atomic_symbols) == n_atoms, \
                         f"expected {n_atoms} atomic_symbols, but got {len(atomic_symbols)}"
                     for a in atomic_symbols:
                         assert a in all_elements, \
                         f"unexpected element!  need to add {a} to all_elements"
 
-                    #print("CCCCCCC")
-
                     symmetrical_atoms = str2array(h5.attrs[f"symmetrical_atoms_{dataset_number}"])
 
-                    #print("DDDDDDD")
-
                     # store the results
-                    molecule = Molecule(dataset_number, atomic_symbols, symmetrical_atoms,
-                                        perturbed_geometries, perturbed_shieldings)
-                    #print(f"Putting molecule {self.molecule_number} to pipeline.")
+                    molecule = Molecule(dataset_number, perturbed_geometries, perturbed_shieldings,
+                            atomic_symbols, symmetrical_atoms=symmetrical_atoms)
                     self.pipeline.put_molecule_to_ext(molecule)
                     self.molecule_number += 1
                     if record_in_dict:
                         self.testing_molecules_dict[molecule.name] = molecule
-                    #print(f"put molecule {molecule.name}, n_examples={n_examples}")
 
                     while self.pipeline.ext_batch_ready():
-                        #print(f"Getting batch {self.batch_number} from extension...")
-                        batch = self.pipeline.get_batch_from_ext()
-                        #print(f"Putting batch {self.batch_number} to queue...", end='')
-                        self.pipeline.put_batch(batch)
-                        #print(" Put.")
-                        self.batch_number += 1
+                        self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
 
                 # update counters
                 examples_read += n_examples
                 self.hdf5_file_index += 1
 
-                # check whether we have processed enough
                 if examples_read == examples_to_read:
                     # read enough examples, stopped partway through file
-                    #print(f"Read {examples_read} examples from file {self.hdf5_file_list_index}.")
                     self.pipeline.set_finished_reading()
-                    while self.molecule_pipeline.any_batch_coming():
-                        #time.sleep(2)
-                        #print(f"Molecule queue: {self.molecule_pipeline.molecule_queue_size()}")
-                        #print(f"Example queue: {self.molecule_pipeline.example_queue_size()}")
-                        #print(f"Batch queue: {self.molecule_pipeline.batch_queue_size()}")
-                        #print(f"Num example: {self.molecule_pipeline.num_example()}")
-                        #print(f"Num batch: {self.molecule_pipeline.num_batch()}\n")
-                        #print(f"Getting batch {self.batch_number} from extension...")
-                        batch = self.pipeline.get_batch_from_ext()
-                        #print(f"Putting batch {self.batch_number} to queue...", end='')
-                        self.pipeline.put_batch(batch)
-                        #print(" Put.")
-                        self.batch_number += 1
                     return examples_read
 
         # reached end of file without enough examples
-        #print(f"Finished reading file {self.hdf5_file_list_index} with {examples_read} examples.")
         self.hdf5_file_list_index += 1
         self.hdf5_file_index = 0
         return examples_read
+
+    def read_hdf5_format_1(self, filename, examples_to_read, make_molecules, record_in_dict):
+        with h5py.File(filename, "r") as h5:
+            if make_molecules:
+                examples_read = 0
+                for key, dataset in itertools.islice(h5.items(), self.hdf5_file_index, None):
+                    if record_in_dict:
+                        molecule = Molecule(str(dataset.attrs["smiles"]), dataset[...,:3], dataset[...,3],
+                                dataset.attrs["atomic_numbers"], weights=dataset.attrs["weights"])
+                        self.pipeline.put_molecule_to_ext(molecule)
+                        self.testing_molecules_dict[molecule.name] = molecule
+                    else:
+                        #print("Putting molecule data...")
+                        #r = self.pipeline.put_molecule_data(dataset, dataset.attrs["atomic_numbers"],
+                        #         dataset.attrs["weights"], str(dataset.attrs["smiles"]))
+                        #print(f"Put molecule? {r}")
+                        molecule = Molecule(str(dataset.attrs["smiles"]), dataset[...,:3], dataset[...,3],
+                                dataset.attrs["atomic_numbers"], weights=dataset.attrs["weights"])
+                        self.pipeline.put_molecule_to_ext(molecule)
+
+                    while self.pipeline.ext_batch_ready():
+                        #print("Getting batch.")
+                        self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
+
+                    # update counters
+                    examples_read += 1
+                    self.hdf5_file_index += 1
+
+                    if examples_read == examples_to_read:
+                        # read enough examples, stopped partway through file
+                        self.pipeline.set_finished_reading()
+                        return examples_read
+
+                # reached end of file without enough examples
+                self.hdf5_file_list_index += 1
+                self.hdf5_file_index = 0
+                return examples_read
+            else:
+                file_length = len(h5.keys())
+                if self.hdf5_file_index + examples_to_read >= file_length:
+                    self.hdf5_file_list_index += 1
+                    self.hdf5_file_index = 0
+                    return file_length - self.hdf5_file_index
+                else:
+                    self.hdf5_file_index += examples_to_read
+                    return examples_to_read
+ 
+
 
 # method that takes Molecules from a queue (molecule_queue) and places
 # DataNeighbors into another queue (data_neighbors_queue)
