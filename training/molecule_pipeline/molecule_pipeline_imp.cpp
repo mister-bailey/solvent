@@ -17,20 +17,20 @@ Molecule::Molecule(int num_examples, int num_atoms, PyArrayObject *positions, co
             PyArrayObject *output, PyArrayObject * weights, string name) :
             num_examples(num_examples), num_atoms(num_atoms), positions(positions),
             output(output), weights(weights), name(name) {
-    printf("Constructing molecule from data A\n");
+    maxprintf(5,"Constructing molecule from data A\n");
     npy_intp fdim[2] = {num_atoms, BatchGenerator::num_elements};
-    printf("Constructing molecule from data B\n");
+    maxprintf(5,"Constructing molecule from data B\n");
     features = (PyArrayObject *)PyArray_ZEROS(2, fdim, NPY_FLOAT64, 0);
-    printf("Constructing molecule from data C\n");
+    maxprintf(5,"Constructing molecule from data C\n");
     ftype *fdata = (ftype *)PyArray_DATA(features);
-    printf("Constructing molecule from data D ");
+    maxprintf(5,"Constructing molecule from data D ");
     for(int a = 0; a < num_atoms; a++, fdata += BatchGenerator::num_elements){
-        printf("%d ",a);
+        //printf("%d ",a);
         int atomic_number = elements[a];
         fdata[BatchGenerator::element_map[atomic_number]] = 1;
         if(!BatchGenerator::relevant_elements.count(atomic_number)) ((ftype *)PyArray_DATA(weights))[a] = 0;
     }        
-    printf("\nConstructing molecule from data - Finished\n");
+    maxprintf(5,"\nConstructing molecule from data - Finished\n");
 }
 
 Molecule::~Molecule(){
@@ -123,9 +123,9 @@ void BatchGenerator::processMolecule(Molecule *m) {
 
 void BatchGenerator::loopProcessMolecules(int max){
     for(int i=0; i != max; i++){
-        //printf("m.pop\n");
+        maxprintf(5,"m.pop...\n");
         Molecule *m = molecule_queue.pop();
-        //printf("m.process\n");
+        maxprintf(5,"m.process...\n");
         processMolecule(m);
     }
 }
@@ -199,11 +199,14 @@ Example *BatchGenerator::makeBatch() {
 
 void BatchGenerator::loopMakeBatches(int max) {
 	for(int i=0; i != max; i++) {
+        maxprintf(5,"Batch thread waiting...\n");
         waitTillExComing();
         {
             unique_lock<mutex> bl(batch_count_mutex);
+            maxprintf(5,"Got batch count mutex.\n");
             num_batch++;
         }
+        maxprintf(5,"Making batch...\n");
         batch_queue.push(makeBatch());
     }
 }
@@ -244,10 +247,12 @@ Example *BatchGenerator::getBatch(bool block) {
 }
 
 void BatchGenerator::batchThreadRun(BatchGenerator* bg) {
+    printf("batchThreadRun...\n");
 	bg->loopMakeBatches();
 }
 
 void BatchGenerator::moleculeThreadRun(BatchGenerator* bg) {
+    printf("moleculeThreadRun...\n");
     bg->loopProcessMolecules();
 }
 
@@ -314,10 +319,16 @@ BatchGenerator::BatchGenerator(int batch_size, float max_radius, vector<int> ele
         example_queue(example_cap), 
         batch_queue(batch_cap)
 {
+    printf("Constructing BatchGenerator...\n");
+    printf("Building element map... ");
     buildElementMap(elements, relevant_elements);
+    printf("Done.\n");
 	molecule_threads.reserve(num_threads);
+    printf("Constructing molecule threads...\n");
     for(int i=0; i < num_threads; i++) molecule_threads.push_back(thread(moleculeThreadRun, this));
+    printf("Construcing batch thread...\n");
     batch_thread = thread(batchThreadRun, this);
+    printf("Finished construcing BatchGenerator.\n");
 }
 
 // Badly designed destructor. Doesn't properly clean things up. Just detaches threads and hopes for

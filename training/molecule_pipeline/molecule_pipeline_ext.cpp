@@ -157,41 +157,54 @@ PyObject* molecule_pipeline_ext_notifyFinished(PyObject* self, PyObject* bgc) {
 
 PyDoc_STRVAR(molecule_pipeline_ext_putMolecule_doc, "putMolecule(batch_generator, positions, features, output, weights, name=\"\", block = True)");
 PyObject* molecule_pipeline_ext_putMolecule(PyObject* self, PyObject* args, PyObject* kwargs) {
+	maxprintf(5,"putMolecule...\n");
 	PyObject* capsule;
 	PyArrayObject *positions, *features, *output, *weights;
 	const char *name = "";
 	bool block = true;
 
+	maxprintf(5,"Parsing arguments... ");
 	static char* keywords[] = { "", "positions", "features", "output", "weights", "name", "block", NULL};
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|sp", keywords, &capsule, &positions, &features, &output, &weights, &name, &block))
 		return NULL;
-	BatchGenerator *bg = (BatchGenerator*)PyCapsule_GetPointer(capsule, "BatchGenerator");
+	maxprintf(5,"Done.\n");
 
+	maxprintf(5,"Getting capsule... ");
+	BatchGenerator *bg = (BatchGenerator*)PyCapsule_GetPointer(capsule, "BatchGenerator");
+	maxprintf(5,"Done.\n");
+
+	maxprintf(5,"Flushing deletion queue... ");
 	//First flush the deletion queue, since we have the GIL
 	while(bg->deletion_queue.size() > 0) delete bg->deletion_queue.pop();
+	maxprintf(5,"Done.\n");
 
-	//printf("Putting molecule ");
-	//printf(name);
-	//printf("...\n");
-
+	maxprintf(5,"Building arrays... ");
 	positions = (PyArrayObject*)PyArray_FROM_OTF((PyObject*)positions, NPY_FLOAT64, NPY_ARRAY_IN_ARRAY);
 	features = (PyArrayObject*)PyArray_FROM_OTF((PyObject*)features, NPY_FLOAT64, NPY_ARRAY_IN_ARRAY);
 	output = (PyArrayObject*)PyArray_FROM_OTF((PyObject*)output, NPY_FLOAT64, NPY_ARRAY_IN_ARRAY);
 	weights = (PyArrayObject*)PyArray_FROM_OTF((PyObject*)weights, NPY_FLOAT64, NPY_ARRAY_IN_ARRAY);
+	maxprintf(5,"Done.\n");
 
+	maxprintf(5,"Getting array dimensions... ");
 	int num_examples, num_atoms;
 	if(PyArray_NDIM(positions) == 3){
 		num_examples = PyArray_DIM(positions, 0);
 		num_atoms = PyArray_DIM(positions, 1);
+		maxprintf(5,"NDIM = 3, Done.\n");
 	} else if(PyArray_NDIM(positions) == 2){
 		num_examples = 1;
 		num_atoms = PyArray_DIM(positions, 0);
-	}
+		maxprintf(5,"NDIM = 2, Done.\n");
+	} else {maxprintf(5,"Unexpected array dimensions!\n");}
 
+	maxprintf(5,"Calling molecule constructor...\n");
 	Molecule *m = new Molecule(num_examples, num_atoms, positions, features, output, weights, string(name));
+	maxprintf(5,"Got molecule.\n");
 
+	maxprintf(5,"Calling bg->putMolecule...\n");
 	bool r = bg->putMolecule(m, block);
 	if(!r) delete m;
+	maxprintf(5,"Returned from bg->putMolecule\n");
 
 	return Py_BuildValue("O", r ? Py_True : Py_False);
 }

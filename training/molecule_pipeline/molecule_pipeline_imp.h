@@ -19,6 +19,15 @@ Copyright Michael Bailey 2020
 #include <map>
 #include <set>
 
+// Weird macros to produce unique variable names
+#define PP_CAT(a, b) PP_CAT_I(a, b)
+#define PP_CAT_I(a, b) PP_CAT_II(~, a ## b)
+#define PP_CAT_II(p, res) res
+#define UNIQUE_NAME(base) PP_CAT(base, __LINE__)
+
+// Prints only the first max times; for debugging
+#define maxprintf(max, ...) static int UNIQUE_NAME(limcount); if(++ UNIQUE_NAME(limcount) < max) printf(__VA_ARGS__)
+
 #define MEMSAFE lock_guard<mutex> lg(alloc_mutex); //if(this->end) return;
 
 #define ftype double //NPY_FLOAT64
