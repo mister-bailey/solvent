@@ -6,6 +6,7 @@ import time
 from glob import glob
 import os
 import math
+import sys
 if __name__ == '__main__': print("loading torch...")
 import torch
 from torch.multiprocessing import freeze_support
@@ -18,11 +19,11 @@ import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
 from pipeline import Pipeline, Molecule, test_data_neighbors
-from training_utils import TrainingHistory, train_batch, compute_testing_loss, checkpoint, batch_examples
+from training_utils import TrainingHistory, train_batch, compute_testing_loss, checkpoint, batch_examples, compare_models
 from diagnostics import print_parameter_size, count_parameters, get_object_size
 from variable_networks import VariableParityNetwork
+from sparse_kernel_conv import SparseKernelConv, DummyConvolution
 if __name__ == '__main__': print("done loading modules.")
-import sys
 
 if os.name == 'posix':
     import resource
@@ -81,6 +82,7 @@ def main():
         max_radius = training_config.max_radius
         learning_rate = training_config.learning_rate
         number_of_basis = training_config.number_of_basis
+        radial_h = training_config.radial_h
         model = None
         optimizer = None
     else:
@@ -101,9 +103,10 @@ def main():
         max_radius = model_kwargs['max_radius']
         learning_rate = model_dict['optimizer_state_dict']['param_groups'][0]['lr']
         number_of_basis = model_kwargs['number_of_basis']
+        radial_h = model_kwargs['radial_h']
 
         # reconstruct model
-        model = VariableParityNetwork(convolution=Convolution, batch_norm=True, **model_kwargs)
+        model = VariableParityNetwork(convolution=Convolution, batch_norm=False, **model_kwargs)
         model.load_state_dict(model_dict["state_dict"])
         model.to(device)
 
@@ -139,10 +142,18 @@ def main():
     print()
 
     print(f"Will use training data from {len(hdf5_filenames)} files:")
-    for filename in hdf5_filenames:
+    for filename in hdf5_filenames[:4]:
         print(f"   {filename}")
+    print("   Etc...")
 
     ### prepare for training ###
+
+    print("\n=== Starting molecule pipeline ===\n")
+    print("Working...", end='\r', flush=True)
+    pipeline = Pipeline(hdf5_filenames, 1, max_radius, Rs_in, Rs_out,
+            jiggles_per_molecule, n_molecule_processors, molecule_queue_max_size)
+    testing_molecules_dict = pipeline.testing_molecules_dict
+
 
     # setup processes that will read the training data
     # when all examples have been exhausted, n_molecule_processors
@@ -150,11 +161,7 @@ def main():
     # and data_neighbors_queue to the training loop to signal an end to the epoch
     print("\n=== Preprocessing Testing Data ===\n")
     print("Working...", end="\r", flush=True)
-
     time1 = time.time()
-    pipeline = Pipeline(hdf5_filenames, 1, max_radius,
-                        Rs_in, Rs_out, jiggles_per_molecule, n_molecule_processors, molecule_queue_max_size)
-    testing_molecules_dict = pipeline.testing_molecules_dict
     pipeline.start_reading(testing_size,True,True)  # (how many examples to process,
                                                     #  whether to make Molecules,
                                                     #  whether to save the molecules to a dict)
@@ -194,10 +201,16 @@ def main():
             'lmaxes' : lmaxes,
             'max_radius' : max_radius,
             'number_of_basis' : number_of_basis,
+            'radial_h' : radial_h,
         }
-        model = VariableParityNetwork(convolution=Convolution, batch_norm=True, **model_kwargs)
+        #model = VariableParityNetwork(convolution=Convolution, batch_norm=True, **model_kwargs)
+        model = VariableParityNetwork(kernel=SparseKernelConv, convolution=DummyConvolution, batch_norm=True, **model_kwargs)
         model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), learning_rate)
+    
+    #model2 = VariableParityNetwork(kernel=SparseKernelConv, convolution=DummyConvolution, batch_norm=True, **model_kwargs)
+    #model2.to(device)
+    #optimizer2 = torch.optim.Adam(model2.parameters(), learning_rate)
 
     # print model details
     print("=== Model and Optimizer ===\n")
@@ -245,9 +258,11 @@ def main():
 
             minibatches_seen += 1
             train_batch(data, model, optimizer, training_history)
+            #train_batch(data, model2, optimizer2, None)
             training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches, t_wait, 0, bqsize)
 
             if minibatches_seen % testing_interval == 0:
+                #compare_models(model, model2, data, copy_parameters=True)
                 compute_testing_loss(model, testing_batches, training_history,
                                         testing_molecules_dict, epoch, minibatches_seen)
 

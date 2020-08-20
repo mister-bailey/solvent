@@ -175,7 +175,8 @@ def train_batch(data, model, optimizer, training_history):
     minibatch_loss = np.sqrt(loss.item())  # RMSE
     training_time = time.time() - time2
     #t_batch = time2 - time1
-    training_history.log_minibatch_loss(minibatch_loss, training_time)
+    if training_history is not None:
+        training_history.log_minibatch_loss(minibatch_loss, training_time)
     #return t_batch
 
 # Collect list of examples into batches (slow, so only use for testing dataset)
@@ -281,3 +282,17 @@ def compute_testing_loss(model, testing_batches, training_history, molecules_dic
     for element, (mean_error,RMSE) in stats_by_element.items():
         print(f"{number_to_symbol[element]} : {mean_error:.3f} / {RMSE:.3f}    ", end="")
     print(flush=True)
+
+def compare_models(model1, model2, data, tolerance=.01, copy_parameters=True):
+    print("Comparing 2 models....")
+    if copy_parameters:
+        model2.load_state_dict(model1.state_dict())
+    model1.eval()
+    model2.eval()
+    output1 = model1(data.x, data.edge_index, data.edge_attr, n_norm=n_norm)
+    output2 = model2(data.x, data.edge_index, data.edge_attr, n_norm=n_norm)
+    #print(torch.abs(output2 - output1) > tolerance)
+    print(torch.cat((output1,output2),dim=1))
+    print()
+
+
