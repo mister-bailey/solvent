@@ -4,17 +4,18 @@ from e3nn.batchnorm import BatchNorm
 #from radial import GaussianRadialModel
 
 class VariableParityNetwork(torch.nn.Module):
-    def __init__(self, Rs_in, muls, Rs_out, lmaxes, #layers=3,
-                 max_radius=1.0, number_of_basis=3, radial_layers=3, radial_h=100,
+    def __init__(self, Rs_in, muls, Rs_out, lmaxes, 
+                 max_radius=1.0, number_of_basis=3, radial_layers=10, radial_h=100,
                  feature_product=False, kernel=Kernel, convolution=Convolution,
-                 radial_model=None, batch_norm=False, deep_batch_norm=False):
+                 radial_model=None, batch_norm=True):#, batch_norm_at_end=False):
         super().__init__()
 
         self.batch_norm = batch_norm
+        #self.batch_norm_at_end = batch_norm_at_end
         if radial_model is None:
             R = partial(GaussianRadialModel, max_radius=max_radius,
                         number_of_basis=number_of_basis, h=radial_h,
-                        L=radial_layers, act=swish)#, batch_norm=deep_batch_norm)
+                        L=radial_layers, act=swish)
         else:
             R = partial(radial_model, max_radius=max_radius, h=radial_h,
                         L=radial_layers, act=swish)
@@ -22,7 +23,7 @@ class VariableParityNetwork(torch.nn.Module):
         modules = []
 
         Rs = Rs_in
-        #if batch_norm:
+        #if batch_norm_at_beginning:
         #    modules.append(BatchNorm([(m,2 * l + 1) for (m,l,_) in Rs_in]))
 
         for mul, lmax in zip(muls, lmaxes):
@@ -33,13 +34,11 @@ class VariableParityNetwork(torch.nn.Module):
             gates = [(rs.mul_dim(nonscalars), 0, +1)]
             act_gates = [(-1, sigmoid)]
 
-            K = partial(kernel, RadialModel=R, selection_rule=partial(o3.selection_rule_in_out_sh, lmax=lmax))
+            #K = partial(kernel, RadialModel=R, selection_rule=partial(o3.selection_rule_in_out_sh, lmax=lmax))
 
             act = GatedBlockParity(scalars, act_scalars, gates, act_gates, nonscalars)
-            conv = convolution(K(Rs, act.Rs_in))
+            conv = convolution(kernel(Rs, act.Rs_in, RadialModel=R, selection_rule=partial(o3.selection_rule_in_out_sh, lmax=lmax)))
             if batch_norm:
-                #print(f"Rs = {Rs}")
-                #print(f"act.Rs_in = {act.Rs_in}")
                 bn = BatchNorm([(m,2 * l + 1) for (m,l,_) in act.Rs_in])
 
             if feature_product:
@@ -58,29 +57,30 @@ class VariableParityNetwork(torch.nn.Module):
             modules.append(block)
 
         self.layers = torch.nn.ModuleList(modules)
+    
+        #K = partial(K, allow_unused_inputs=True)
+        self.layers.append(convolution(kernel(Rs, Rs_out, RadialModel=R,
+                selection_rule=partial(o3.selection_rule_in_out_sh,
+                lmax=lmaxes[-1]), allow_unused_inputs=True)))
+#        if batch_norm_at_end:
+#            self.layers.append(BatchNorm([(m,2 * l + 1) for (m,l,_) in Rs_out]))
 
-        K = partial(K, allow_unused_inputs=True)
-        self.layers.append(convolution(K(Rs, Rs_out)))
         self.feature_product = feature_product
 
     def forward(self, input, *args, **kwargs):
         output = input
-        N = args[0].shape[-2]
         if 'n_norm' not in kwargs:
-            kwargs['n_norm'] = N
+            kwargs['n_norm'] = args[0].shape[-2]
 
-        if self.batch_norm:
-            #output = self.layers[0](output)
-            for conv, bn, act in self.layers[:-1]:
-                output = conv(output, *args, **kwargs)
-                output = bn(output)
-                output = act(output)
-        else:
-            for conv, act in self.layers[:-1]:
-                output = conv(output, *args, **kwargs)
-                output = act(output)
-
-        layer = self.layers[-1]
-        output = layer(output, *args, **kwargs)
+        for layer in self.layers:
+            if isinstance(layer, torch.nn.ModuleList):
+                for i, sublayer in enumerate(layer):
+                    if i == 0:
+                        output = sublayer(output, *args, **kwargs)
+                    else:
+                        output = sublayer(output)
+            else:
+                output = layer(output, *args, **kwargs)
+        
         return output
 
