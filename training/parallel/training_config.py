@@ -88,6 +88,7 @@ lmaxes = parse_list(config['model']['lmaxes'], func=int)
 max_radius = float(config['model']['max_radius'])
 n_norm = float(config['model']['n_norm'])
 number_of_basis = int(config['model']['number_of_basis'])
+radial_h = int(config['model']['radial_h'])
 
 # training parameters
 n_epochs = int(config['training']['n_epochs'])                        # number of epochs
