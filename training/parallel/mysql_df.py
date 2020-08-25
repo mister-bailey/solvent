@@ -73,7 +73,7 @@ class MysqlDB():
             rows = cursor.fetchall()
 
             for i in range(len(values)):
-                if i == 0:
+                if i == 0 or i == 6:
                     values[i] = [inflate(r[i]) for r in rows]
                 else:
                     values[i] = [r[i] for r in rows]
@@ -91,7 +91,7 @@ class MysqlDB():
             rows = cursor.fetchall()
 
         con.close()
-        return [(inflate(r[0]), r[1], r[2], r[3], r[5], r[6]) for r in rows if r[4] == 1]
+        return [(inflate(r[0]), r[1], r[2], r[3], r[5], inflate(r[6])) for r in rows if r[4] == 1]
 
     def read_range(self, start_row, stop_row):
         """
@@ -104,7 +104,7 @@ class MysqlDB():
             rows = cursor.fetchall()
 
         con.close()
-        return [(inflate(r[0]), r[1], r[2], r[3], r[5], r[6]) for r in rows if r[4] == 1]
+        return [(inflate(r[0]), r[1], r[2], r[3], r[5], inflate(r[6])) for r in rows if r[4] == 1]
 
 
     def write(self, row_idxs, data, energy, e_rel, gdb_id, status, check=True):
