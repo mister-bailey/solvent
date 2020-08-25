@@ -63,7 +63,7 @@ if data_source.startswith('hdf5'):
     hdf5_filenames = list(sorted(glob(config['data']['hdf5_filenames'])))
     assert len(hdf5_filenames) > 0, "no files found!"
 elif data_source == 'SQL':
-    connect_params = config['connect_params']
+    connect_params = dict(config['connect_params'])
     SQL_fetch_size = int(config['data']['SQL_fetch_size'])
 
 
