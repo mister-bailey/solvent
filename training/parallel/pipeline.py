@@ -452,13 +452,13 @@ class DatasetReader(Process):
     def read_examples_from_SQL(self, examples_to_read, make_molecules, record_in_dict):
         examples_read = 0
         while examples_read < examples_to_read:
-            for i, (data, _, _, smiles) in enumerate(self.molecule_buffer):
+            for i, (data, _, _, smiles, _, weights) in enumerate(self.molecule_buffer):
                 if make_molecules:
                     if examples_read == examples_to_read:
                         self.molecule_buffer = self.molecule_buffer[i:]
                         break
                     molecule = Molecule(str(smiles), data[:,1:4], data[:,4],
-                                data[:,0], weights=[1.0] * data.shape[0])
+                                data[:,0], weights=weights)
                     self.pipeline.put_molecule_to_ext(molecule)
                     if record_in_dict:
                         self.testing_molecules_dict[molecule.name] = molecule                

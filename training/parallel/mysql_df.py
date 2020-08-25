@@ -40,8 +40,10 @@ class MysqlDB():
         else:
             self.connect_params = connect_params
         if 'passwd' not in self.connect_params:
-            print(f"Using database {self.connect_params['db']} at ")
+            print(f"Using database {self.connect_params['db']}: {self.connect_params['user']}@{self.connect_params['host']}")
             self.connect_params['passwd'] = getpass(prompt="Please enter password: ")
+        if 'ssl' not in self.connect_params:
+            self.connect_params['ssl'] = {'ssl':{}}
 
         #assert isinstance(smiles_path, str), "path must be a string"
         self.smiles_path = smiles_path
@@ -63,11 +65,11 @@ class MysqlDB():
         Returns data, energy, e_rel, gdb_id, and status.
         """
 
-        values = [None] * 5
+        values = [None] * 7
 
         con = pymysql.connect(**self.connect_params)
         with con.cursor() as cursor:
-            result = cursor.execute(f"select data, energy, e_rel, gdb_id, status from data where id in ({','.join(['%s']*len(row_indices))})", row_indices)
+            result = cursor.execute(f"select data, energy, e_rel, gdb_id, status, symmetric_atoms, weights from data where id in ({','.join(['%s']*len(row_indices))})", row_indices)
             rows = cursor.fetchall()
 
             for i in range(len(values)):
@@ -85,11 +87,11 @@ class MysqlDB():
 
         con = pymysql.connect(**self.connect_params)
         with con.cursor() as cursor:
-            result = cursor.execute(f"select data, energy, e_rel, gdb_id, status from data where id in ({','.join(['%s']*len(row_indices))})", row_indices)
+            result = cursor.execute(f"select data, energy, e_rel, gdb_id, status, symmetric_atoms, weights from data where id in ({','.join(['%s']*len(row_indices))})", row_indices)
             rows = cursor.fetchall()
-            
+
         con.close()
-        return [(inflate(r[0]), r[1], r[2], r[3]) for r in rows if r[4] == 1]
+        return [(inflate(r[0]), r[1], r[2], r[3], r[5], r[6]) for r in rows if r[4] == 1]
 
     def read_range(self, start_row, stop_row):
         """
@@ -98,11 +100,11 @@ class MysqlDB():
 
         con = pymysql.connect(**self.connect_params)
         with con.cursor() as cursor:
-            result = cursor.execute(f"select data, energy, e_rel, gdb_id, status from data limit {start_row}, {stop_row - start_row}")
+            result = cursor.execute(f"select data, energy, e_rel, gdb_id, status, symmetric_atoms, weights from data limit {start_row}, {stop_row - start_row}")
             rows = cursor.fetchall()
 
         con.close()
-        return [(inflate(r[0]), r[1], r[2], r[3]) for r in rows if r[4] == 1]
+        return [(inflate(r[0]), r[1], r[2], r[3], r[5], r[6]) for r in rows if r[4] == 1]
 
 
     def write(self, row_idxs, data, energy, e_rel, gdb_id, status, check=True):
@@ -242,4 +244,5 @@ class MysqlDB():
 if __name__ == '__main__':
     # Test
     db = MysqlDB("local_mysql.yaml", None, None)
+    print(f"Connected to {db.connect_params['db']}: {db.connect_params['user']}@{db.connect_params['host']}")
     print(db.read_range(0,3))
