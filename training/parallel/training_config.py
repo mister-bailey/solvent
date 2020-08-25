@@ -53,9 +53,20 @@ for e in relevant_elements:
 assert len(relevant_elements) == len(set(relevant_elements)), "duplicate element"
 
 # where the raw data are stored
-hdf5_filenames = list(sorted(glob(config['data']['hdf5_filenames'])))
-assert len(hdf5_filenames) > 0, "no files found!"
-file_format = int(config['data']['file_format'])
+data_source = config['data']['source']
+if data_source.startswith('hdf5'):
+    if data_source == 'hdf5_0':
+        file_format = 0
+    else:
+        file_format = 1
+    data_source = 'hdf5'
+    hdf5_filenames = list(sorted(glob(config['data']['hdf5_filenames'])))
+    assert len(hdf5_filenames) > 0, "no files found!"
+elif data_source == 'SQL':
+    connect_params = config['connect_params']
+    SQL_fetch_size = int(config['data']['SQL_fetch_size'])
+
+
 
 # how many jiggles to get per file
 # this is not checked--requesting an invalid number will cause a runtime error

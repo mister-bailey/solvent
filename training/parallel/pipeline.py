@@ -34,7 +34,6 @@ device = training_config.device
 # other parameters
 n_norm = training_config.n_norm
 testing_size = training_config.testing_size
-file_format = training_config.file_format
 
 ### Code for Storing Training Data ###
 
@@ -124,7 +123,7 @@ def Rs_size(Rs):
     return size
 
 class Pipeline():
-    def __init__(self, hdf5_filenames, batch_size, max_radius, Rs_in, Rs_out, requested_jiggles=1,
+    def __init__(self, batch_size, max_radius, Rs_in, Rs_out, requested_jiggles=1,
                 n_molecule_processors=1, molecule_cap = 10000, example_cap = 10000, batch_cap = 100,
                 share_batches=True, manager=None, new_process=True):
         if manager is None:
@@ -143,7 +142,7 @@ class Pipeline():
         #self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
         #                                    (self, max_radius, Rs_in, Rs_out))
         self.testing_molecules_dict = manager.dict()
-        self.dataset_reader = DatasetReader("dataset_reader", self, hdf5_filenames, batch_size,
+        self.dataset_reader = DatasetReader("dataset_reader", self, batch_size,
                     max_radius, Rs_in, Rs_out, requested_jiggles, n_molecule_processors, molecule_cap, example_cap,
                     batch_cap, self.testing_molecules_dict, new_process)
         if new_process:
@@ -274,15 +273,15 @@ class StartSignal(DatasetSignal):
 # process that reads an hdf5 file and returns Molecules
 class DatasetReader(Process):
     def __init__(self, name, pipeline,
-                       hdf5_filenames, batch_size, max_radius, Rs_in, Rs_out, requested_jiggles,
+                       batch_size, max_radius, Rs_in, Rs_out, requested_jiggles,
                        num_threads, molecule_cap, example_cap, batch_cap,
                        testing_molecules_dict, new_process = True):
         if new_process:
             super().__init__(group=None, target=None, name=name)
         self.pipeline = pipeline
-        self.hdf5_filenames = hdf5_filenames   # hdf5 files to process
         self.hdf5_file_list_index = 0          # which hdf5 file
         self.hdf5_file_index = 0               # which example within the hdf5 file
+        self.row_index = 0                     # current row, if reading from SQL
         assert isinstance(requested_jiggles, int), "requested_jiggles should be an integer"
         self.requested_jiggles = requested_jiggles  # how many jiggles per file
         self.testing_molecules_dict = testing_molecules_dict   # molecule name -> Molecule
@@ -290,17 +289,27 @@ class DatasetReader(Process):
         self.molecule_pipeline_args = (batch_size, max_radius, all_elements,
                     relevant_elements, num_threads, molecule_cap, example_cap, batch_cap)
         self.molecule_number = 0
-        if file_format == 0:
-            self.read_hdf5 = self.read_hdf5_format_0
-        elif file_format == 1:
-            self.read_hdf5 = self.read_hdf5_format_1
+        self.data_source = training_config.data_source
+        if self.data_source == 'hdf5':
+            self.hdf5_filenames = training_config.hdf5_filenames   # hdf5 files to process
+            self.read_examples = self.read_examples_from_file
+            if training_config.file_format == 0:
+                self.read_hdf5 = self.read_hdf5_format_0
+            elif training_config.file_format == 1:
+                self.read_hdf5 = self.read_hdf5_format_1
+        elif self.data_source == 'SQL':
+            self.connect_params = training_config.connect_params
+            self.SQL_fetch_size = training_config.SQL_fetch_size
+            self.molecule_buffer = []
+            self.read_examples = self.read_examples_from_SQL
+            from mysql_df import MysqlDB
+            self.database = MysqlDB(self.connect_params)
 
     # process the data in all hdf5 files
     def run(self):
         if self.molecule_pipeline is None:
             self.molecule_pipeline = MoleculePipeline(*self.molecule_pipeline_args)
             self.pipeline.molecule_pipeline = self.molecule_pipeline
-        assert len(self.hdf5_filenames) > 0, "no files to process!"
 
         while True:
             command = self.pipeline.get_command()
@@ -308,6 +317,8 @@ class DatasetReader(Process):
             if isinstance(command, RestartSignal):
                 self.hdf5_file_list_index = 0
                 self.hdf5_file_index = 0
+                self.row_index = 0
+                self.molecule_buffer = []
                 #self.molecule_pipeline.notify_starting()
             elif isinstance(command, StartSignal):
                 self.molecule_number = 0
@@ -322,7 +333,7 @@ class DatasetReader(Process):
 
     # iterate through hdf5 filenames, picking up where we left off
     # returns: number of examples processed
-    def read_examples(self, examples_to_read, make_molecules, record_in_dict):
+    def read_examples_from_file(self, examples_to_read, make_molecules, record_in_dict):
         examples_read = 0       # how many examples have been processed this round
         assert self.hdf5_file_list_index < len(self.hdf5_filenames), \
             "request to read examples, but files are finished!"
@@ -413,7 +424,6 @@ class DatasetReader(Process):
                         self.pipeline.put_molecule_to_ext(molecule)
 
                     while self.pipeline.ext_batch_ready():
-                        #print("Getting batch.")
                         self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
 
                     # update counters
@@ -438,7 +448,31 @@ class DatasetReader(Process):
                 else:
                     self.hdf5_file_index += examples_to_read
                     return examples_to_read
- 
+    
+    def read_examples_from_SQL(self, examples_to_read, make_molecules, record_in_dict):
+        examples_read = 0
+        while examples_read < examples_to_read:
+            for i, (data, _, _, smiles) in enumerate(self.molecule_buffer):
+                if make_molecules:
+                    if examples_read == examples_to_read:
+                        self.molecule_buffer = self.molecule_buffer[i:]
+                        break
+                    molecule = Molecule(str(smiles), data[:,1:4], data[:,4],
+                                data[:,0], weights=[1.0] * data.shape[0])
+                    self.pipeline.put_molecule_to_ext(molecule)
+                    if record_in_dict:
+                        self.testing_molecules_dict[molecule.name] = molecule                
+                examples_read += 1
+                while self.pipeline.ext_batch_ready():
+                    self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
+            if len(self.molecule_buffer) < self.SQL_fetch_size:
+                self.molecule_buffer += self.database.read_range(self.row_index, self.SQL_fetch_size + self.row_index)
+                self.row_index += self.SQL_fetch_size
+
+        return examples_read
+            
+
+
 
 
 # method that takes Molecules from a queue (molecule_queue) and places

@@ -39,7 +39,7 @@ device = training_config.device
 all_elements = training_config.all_elements
 n_elements = len(all_elements)
 relevant_elements = training_config.relevant_elements
-hdf5_filenames = training_config.hdf5_filenames
+#hdf5_filenames = training_config.hdf5_filenames
 jiggles_per_molecule = training_config.jiggles_per_molecule
 testing_size = training_config.testing_size
 training_size = training_config.training_size
@@ -141,16 +141,22 @@ def main():
     print("n_norm:                           ", n_norm)
     print()
 
-    print(f"Will use training data from {len(hdf5_filenames)} files:")
-    for filename in hdf5_filenames[:4]:
-        print(f"   {filename}")
-    print("   Etc...")
+    if training_config.data_source == 'hdf5':
+        print(f"Will use training data from {len(hdf5_filenames)} files:")
+        for filename in hdf5_filenames[:4]:
+            print(f"   {filename}")
+        print("   Etc...")
+    elif training_config.data_source == 'SQL':
+        print(f"Using training data from database:")
+        print(f"  {training_config.connect_params['db']}: {training_config.connect_params['user']}@{training_config.connect_params['host']}")
+        #if 'passwd' not in training_config.connect_params:
+        #    self.connect_params['passwd'] = getpass(prompt="Please enter password: ")
 
     ### prepare for training ###
 
     print("\n=== Starting molecule pipeline ===\n")
     print("Working...", end='\r', flush=True)
-    pipeline = Pipeline(hdf5_filenames, 1, max_radius, Rs_in, Rs_out,
+    pipeline = Pipeline(1, max_radius, Rs_in, Rs_out,
             jiggles_per_molecule, n_molecule_processors, molecule_queue_max_size)
     testing_molecules_dict = pipeline.testing_molecules_dict
 
