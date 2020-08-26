@@ -92,14 +92,17 @@ data_neighbors_queue_max_size = int(config['data']['data_neighbors_queue_max_siz
 load_model_from_file = config['model']['load_model_from_file']
 if load_model_from_file.lower() == "false" or load_model_from_file.lower() == "none":
     load_model_from_file = False
+n_norm = float(config['model']['n_norm'])
+
+from e3nn.radial import *
+from laurent import *
+model_kwargs = {key:eval(value) for (key,value) in config['model'].items()
+                if key not in {'load_model_from_file'}}
 Rs_in = [ (n_elements, 0, 1) ]  # n_features, rank 0 tensor, even parity
 Rs_out = [ (1,0,1) ]            # one output per atom, rank 0 tensor, even parity
-muls = parse_list(config['model']['muls'], func=int)
-lmaxes = parse_list(config['model']['lmaxes'], func=int)
-max_radius = float(config['model']['max_radius'])
-n_norm = float(config['model']['n_norm'])
-number_of_basis = int(config['model']['number_of_basis'])
-radial_h = int(config['model']['radial_h'])
+model_kwargs['Rs_in'] = Rs_in
+model_kwargs['Rs_out'] = Rs_out
+
 
 # training parameters
 n_epochs = int(config['training']['n_epochs'])                        # number of epochs

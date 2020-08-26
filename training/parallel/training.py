@@ -1,4 +1,4 @@
-import training_config
+import training_config as config
 if __name__ != '__main__':
     print("spawning process...")
 if __name__ == '__main__': print("loading standard modules...")
@@ -22,6 +22,8 @@ from pipeline import Pipeline, Molecule, test_data_neighbors
 from training_utils import TrainingHistory, train_batch, compute_testing_loss, checkpoint, batch_examples, compare_models
 from diagnostics import print_parameter_size, count_parameters, get_object_size
 from variable_networks import VariableParityNetwork
+from functools import partial
+from laurent import LaurentPolynomial
 from sparse_kernel_conv import SparseKernelConv, DummyConvolution
 if __name__ == '__main__': print("done loading modules.")
 
@@ -33,31 +35,15 @@ if os.name == 'posix':
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
     print(f"\nNow: maximum # of open file descriptors: {rlimit[0]} (soft limit) / {rlimit[1]} (hard limit)")
 
-### read configuration values ###
+from collections.abc import Mapping
+def sub(c, keys):
+    assert isinstance(c, Mapping), f"sub expected a mapping but got a {type(c)}"
+    return {k:c[k] for k in keys}
 
-device = training_config.device
-all_elements = training_config.all_elements
-n_elements = len(all_elements)
-relevant_elements = training_config.relevant_elements
-#hdf5_filenames = training_config.hdf5_filenames
-jiggles_per_molecule = training_config.jiggles_per_molecule
-testing_size = training_config.testing_size
-training_size = training_config.training_size
-n_molecule_processors = training_config.n_molecule_processors
-molecule_queue_max_size = training_config.molecule_queue_max_size
-data_neighbors_queue_max_size = training_config.data_neighbors_queue_max_size
-Rs_in = training_config.Rs_in
-Rs_out = training_config.Rs_out
-n_epochs = training_config.n_epochs
-batch_size = training_config.batch_size
-testing_interval = training_config.testing_interval
-checkpoint_interval = training_config.checkpoint_interval
-checkpoint_prefix = training_config.checkpoint_prefix
-load_model_from_file = training_config.load_model_from_file
-n_norm = training_config.n_norm
+def main():
 
-if __name__ == '__main__':
     ### initialize GPU ###
+    device = config.device
     print("\n=== GPU settings: ===\n")
     print(f"current cuda device: {torch.cuda.current_device()}")
     print(f"cuda device count:   {torch.cuda.device_count()}")
@@ -70,94 +56,105 @@ if __name__ == '__main__':
     print("test tensor:")
     print(temp_tensor)
 
-def main():
     ### initialization ###
 
-    # load pre-existing model if requested
     print("\n=== Model Generation ===\n")
-    if load_model_from_file == False:
-        print("A brand new model was requested.")
-        muls = training_config.muls
-        lmaxes = training_config.lmaxes
-        max_radius = training_config.max_radius
-        learning_rate = training_config.learning_rate
-        number_of_basis = training_config.number_of_basis
-        radial_h = training_config.radial_h
-        model = None
-        optimizer = None
-    else:
+
+    # Defaults:
+    model_kwargs = {
+        'kernel': SparseKernelConv,
+        'convolution': DummyConvolution,
+        'batch_norm': True,
+        }
+
+    load_model_from_file = config.load_model_from_file
+    if load_model_from_file:
         model_filenames = glob(load_model_from_file)
         if len(model_filenames) == 0:
             print(f"Could not find any checkpoints matching '{load_model_from_file}'!")
             exit()
         model_filename = max(model_filenames, key = os.path.getctime)
-        print(f"Loading model from {model_filename}...", end="")
-
-        # read saved model and optimizer data
+        print(f"Loading model from {model_filename}... ", end='')
         model_dict = torch.load(model_filename)
-        model_kwargs = model_dict['model_kwargs']
+        model_kwargs.update(model_dict['model_kwargs'])
+        all_elements = model_dict['all_elements']
+        assert set(all_elements) == set(config.all_elements), "Model elements and config elements don't match!"
+    else:
+        print("A brand new model was requested... ", end='')
+        model_kwargs.update(config.model_kwargs)
+        all_elements = config.all_elements
 
-        # read updated configuration values
-        muls = model_kwargs['muls']
-        lmaxes = model_kwargs['lmaxes']
-        max_radius = model_kwargs['max_radius']
-        learning_rate = model_dict['optimizer_state_dict']['param_groups'][0]['lr']
-        number_of_basis = model_kwargs['number_of_basis']
-        radial_h = model_kwargs['radial_h']
-
-        # reconstruct model
-        model = VariableParityNetwork(convolution=Convolution, batch_norm=False, **model_kwargs)
+    model = VariableParityNetwork(**model_kwargs)
+    print(model_kwargs)
+    if load_model_from_file:
         model.load_state_dict(model_dict["state_dict"])
-        model.to(device)
+    model.to(device)
+    print("Done.")
 
-        # reconstruct optimizer
-        optimizer = torch.optim.Adam(model.parameters(), learning_rate)
+    Rs_in = config.Rs_in
+    Rs_out = config.Rs_out
+    assert Rs_in == model_kwargs['Rs_in'], "Loaded model has wrong number of elements!"
+    max_radius = model_kwargs['max_radius']
+
+    print("Building optimizer... ", end='')
+    optimizer = torch.optim.Adam(model.parameters(), config.learning_rate)
+    if load_model_from_file:
         optimizer.load_state_dict(model_dict["optimizer_state_dict"])
-
-        print("done.")
+    print("Done.")
 
     # report configuration
     print("\n=== Configuration ===\n")
     print("all_elements:                     ", all_elements)
-    print("relevant_elements:                ", relevant_elements)
-    print("jiggles_per_molecule:             ", jiggles_per_molecule)
-    print("testing_size:                     ", testing_size)
-    print("training_size:                    ", training_size)
-    print("n_molecule_processors:            ", n_molecule_processors)
-    print("molecule_queue_max_size:          ", molecule_queue_max_size)
-    print("data_neighbors_queue_max_size:    ", data_neighbors_queue_max_size)
+    print("relevant_elements:                ", config.relevant_elements)
+    print("jiggles_per_molecule:             ", config.jiggles_per_molecule)
+    print("testing_size:                     ", config.testing_size)
+    print("training_size:                    ", config.training_size)
+    print("n_molecule_processors:            ", config.n_molecule_processors)
+    print("molecule_queue_max_size:          ", config.molecule_queue_max_size)
+    print("data_neighbors_queue_max_size:    ", config.data_neighbors_queue_max_size)
     print("Rs_in:                            ", Rs_in)
     print("Rs_out:                           ", Rs_out)
-    print("n_epochs:                         ", n_epochs)
-    print("batch_size:                       ", batch_size)
-    print("testing_interval:                 ", testing_interval)
-    print("checkpoint_interval:              ", checkpoint_interval)
-    print("checkpoint_prefix:                ", checkpoint_prefix)
-    print("learning_rate:                    ", learning_rate)
-    print("muls:                             ", muls)
-    print("lmaxes:                           ", lmaxes)
+    print("n_epochs:                         ", config.n_epochs)
+    print("batch_size:                       ", config.batch_size)
+    print("testing_interval:                 ", config.testing_interval)
+    print("checkpoint_interval:              ", config.checkpoint_interval)
+    print("checkpoint_prefix:                ", config.checkpoint_prefix)
+    print("learning_rate:                    ", config.learning_rate)
+    print("muls:                             ", model_kwargs['muls'])
+    print("lmaxes:                           ", model_kwargs['lmaxes'])
     print("max_radius:                       ", max_radius)
-    print("number_of_basis:                  ", number_of_basis)
-    print("n_norm:                           ", n_norm)
-    print()
+    print("number_of_basis:                  ", model_kwargs['number_of_basis'])
+    print("n_norm:                           ", model_kwargs['n_norm'])
 
-    if training_config.data_source == 'hdf5':
-        print(f"Will use training data from {len(hdf5_filenames)} files:")
-        for filename in hdf5_filenames[:4]:
+    # print model details
+    print("\n=== Model and Optimizer ===\n")
+    model_size = get_object_size(model) / 1E6
+    optimizer_size = get_object_size(optimizer) / 1E6
+    print(f"Model occupies {model_size:.2f} MB; optimizer occupies {optimizer_size:.2f} MB.")
+    print("\nParameters per Layer:")
+    count_parameters(model)
+    print("\nOptimizer:")
+    print(optimizer)
+
+
+    if config.data_source == 'hdf5':
+        print(f"Will use training data from {len(config.hdf5_filenames)} files:")
+        for filename in config.hdf5_filenames[:4]:
             print(f"   {filename}")
         print("   Etc...")
-    elif training_config.data_source == 'SQL':
+    elif config.data_source == 'SQL':
         print(f"Using training data from database:")
-        print(f"  {training_config.connect_params['db']}: {training_config.connect_params['user']}@{training_config.connect_params['host']}")
-        #if 'passwd' not in training_config.connect_params:
+        print(f"  {config.connect_params['db']}: {config.connect_params['user']}@{config.connect_params['host']}")
+        #if 'passwd' not in config.connect_params:
         #    self.connect_params['passwd'] = getpass(prompt="Please enter password: ")
 
     ### prepare for training ###
 
     print("\n=== Starting molecule pipeline ===\n")
     print("Working...", end='\r', flush=True)
-    pipeline = Pipeline(1, max_radius, Rs_in, Rs_out,
-            jiggles_per_molecule, n_molecule_processors, molecule_queue_max_size)
+    relevant_elements = config.relevant_elements
+    pipeline = Pipeline(1, max_radius, Rs_in, Rs_out, all_elements, relevant_elements,
+            config.jiggles_per_molecule, config.n_molecule_processors, config.molecule_queue_max_size)
     testing_molecules_dict = pipeline.testing_molecules_dict
 
 
@@ -168,6 +165,7 @@ def main():
     print("\n=== Preprocessing Testing Data ===\n")
     print("Working...", end="\r", flush=True)
     time1 = time.time()
+    testing_size = config.testing_size
     pipeline.start_reading(testing_size,True,True)  # (how many examples to process,
                                                     #  whether to make Molecules,
                                                     #  whether to save the molecules to a dict)
@@ -189,6 +187,7 @@ def main():
     assert len(testing_examples) == testing_size, \
         f">>>>> expected {testing_size} testing examples but got {len(testing_examples)}"
     
+    batch_size = config.batch_size
     print("Batching test examples...")
     testing_batches = batch_examples(testing_examples, batch_size)
 
@@ -196,47 +195,14 @@ def main():
     print(f"Done preprocessing testing data!  That took {time2-time1:.3f} s.\n")
     testing_molecules_dict = dict(testing_molecules_dict)
 
-    ### model and optimizer ###
-
-    # create model if it wasn't loaded from disk
-    if model == None:
-        model_kwargs = {
-            'Rs_in' : Rs_in,
-            'Rs_out' : Rs_out,
-            'muls' : muls,
-            'lmaxes' : lmaxes,
-            'max_radius' : max_radius,
-            'number_of_basis' : number_of_basis,
-            'radial_h' : radial_h,
-        }
-        #model = VariableParityNetwork(convolution=Convolution, batch_norm=True, **model_kwargs)
-        model = VariableParityNetwork(kernel=SparseKernelConv, convolution=DummyConvolution, batch_norm=True, **model_kwargs)
-        model.to(device)
-        optimizer = torch.optim.Adam(model.parameters(), learning_rate)
-    
-    #model2 = VariableParityNetwork(kernel=SparseKernelConv, convolution=DummyConvolution, batch_norm=True, **model_kwargs)
-    #model2.to(device)
-    #optimizer2 = torch.optim.Adam(model2.parameters(), learning_rate)
-
-    # print model details
-    print("=== Model and Optimizer ===\n")
-    model_size = get_object_size(model) / 1E6
-    optimizer_size = get_object_size(optimizer) / 1E6
-    print(f"Model occupies {model_size:.2f} MB and optimizer occupies {optimizer_size:.2f} MB.")
-    #print("Model Details:")
-    #print_parameter_size(model)
-    print()
-    print("Parameters per Layer:")
-    count_parameters(model)
-    print()
-    print("Optimizer:")
-    print(optimizer)
-
     ### training ###
     print("\n=== Training ===")
 
     # the actual training
+    from training_config import n_epochs, training_size, testing_interval, \
+            checkpoint_interval, checkpoint_prefix
     training_history = TrainingHistory()
+
     for epoch in range(1,n_epochs+1):
         print("                                                                                                ")
         print("Initializing...", end="\r", flush=True)
@@ -263,18 +229,18 @@ def main():
             bqsize = pipeline.batch_queue.qsize()
 
             minibatches_seen += 1
-            train_batch(data, model, optimizer, training_history)
+            train_batch(data, model, optimizer, device, training_history)
             #train_batch(data, model2, optimizer2, None)
             training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches, t_wait, 0, bqsize)
 
             if minibatches_seen % testing_interval == 0:
                 #compare_models(model, model2, data, copy_parameters=True)
-                compute_testing_loss(model, testing_batches, training_history,
-                                        testing_molecules_dict, epoch, minibatches_seen)
+                compute_testing_loss(model, testing_batches, device, relevant_elements, training_history,
+                                     testing_molecules_dict, epoch, minibatches_seen)
 
             if minibatches_seen % checkpoint_interval == 0:
                 checkpoint_filename = f"{checkpoint_prefix}-epoch_{epoch:03d}-checkpoint.torch"
-                checkpoint(model_kwargs, model, checkpoint_filename, optimizer)
+                checkpoint(model_kwargs, model, checkpoint_filename, optimizer, all_elements)
                 training_history.write_files(checkpoint_prefix)
 
     # clean up

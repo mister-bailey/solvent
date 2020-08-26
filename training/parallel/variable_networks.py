@@ -15,7 +15,7 @@ class VariableParityNetwork(torch.nn.Module):
     def __init__(self, Rs_in, Rs_out, lmaxes, muls, 
                  max_radius=1.0, number_of_basis=3, radial_layers=10, radial_h=100,
                  feature_product=False, kernel=Kernel, convolution=Convolution,
-                 radial_model=None, batch_norm=True):
+                 radial_model=None, batch_norm=True, n_norm=None, batch_norm_momentum=None):
         """
         :param Rs_in: list of triplet (multiplicity, representation order, parity)
         :param Rs_out: list of triplet (multiplicity, representation order, parity)
@@ -34,11 +34,14 @@ class VariableParityNetwork(torch.nn.Module):
         """
         super().__init__()
 
-        self.batch_norm = batch_norm
+        self.n_norm = n_norm
         if radial_model is None:
             radial_model = partial(GaussianRadialModel, number_of_basis=number_of_basis)
         R = partial(radial_model, max_radius=max_radius, h=radial_h,
                     L=radial_layers, act=swish)
+        bn_kwargs = {}
+        if batch_norm_momentum is not None:
+            bn_kwargs['momentum'] = batch_norm_momentum
 
         modules = []
 
@@ -57,7 +60,7 @@ class VariableParityNetwork(torch.nn.Module):
             act = GatedBlockParity(scalars, act_scalars, gates, act_gates, nonscalars)
             conv = convolution(kernel(Rs, act.Rs_in, RadialModel=R, selection_rule=partial(o3.selection_rule_in_out_sh, lmax=lmax)))
             if batch_norm:
-                bn = BatchNorm([(m,2 * l + 1) for (m,l,_) in act.Rs_in])
+                bn = BatchNorm([(m,2 * l + 1) for (m,l,_) in act.Rs_in], **bn_kwargs)
 
             if feature_product:
                 tr1 = rs.TransposeToMulL(act.Rs_out)
@@ -85,7 +88,10 @@ class VariableParityNetwork(torch.nn.Module):
     def forward(self, input, *args, **kwargs):
         output = input
         if 'n_norm' not in kwargs:
-            kwargs['n_norm'] = args[0].shape[-2]
+            if self.n_norm is not None:
+                kwargs['n_norm'] = self.n_norm
+            else:
+                kwargs['n_norm'] = args[0].shape[-2]
 
         for layer in self.layers:
             if isinstance(layer, torch.nn.ModuleList):

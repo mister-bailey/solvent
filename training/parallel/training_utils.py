@@ -20,39 +20,32 @@ from molecule_pipeline import ExampleBatch
 
 ### Code to Generate Molecules ###
 
-symbol_to_number = training_config.symbol_to_number
-number_to_symbol = training_config.number_to_symbol
-
-# all expected elements
-all_elements = training_config.all_elements
-n_elements = len(all_elements)
-
 # so we can normalize training data for the nuclei to be predicted
-relevant_elements = training_config.relevant_elements
+#relevant_elements = training_config.relevant_elements
 
 # cpu or gpu
-device = training_config.device
+#device = training_config.device
 
 # other parameters
-n_norm = training_config.n_norm
-training_size = training_config.training_size
-testing_size = training_config.testing_size
-batch_size = training_config.batch_size
+#training_size = training_config.training_size
+#testing_size = training_config.testing_size
+#batch_size = training_config.batch_size
 
 ### Functions for Training ###
 
 # saves a model and optimizer to disk
-def checkpoint(model_kwargs, model, filename, optimizer):
+def checkpoint(model_kwargs, model, filename, optimizer, all_elements):
     model_dict = {
         'state_dict' : model.state_dict(),
         'model_kwargs' : model_kwargs,
-        'optimizer_state_dict' : optimizer.state_dict()
+        'optimizer_state_dict' : optimizer.state_dict(),
+        'all_elements' : all_elements,
     }
     print("                                                                                                      ", end="\r", flush=True)
-    print(f"Checkpointing to {filename}...", end='', flush=True)
+    print(f"Checkpointing to {filename}... ", end='')
     torch.save(model_dict, filename)
     file_size = os.path.getsize(filename) / 1E6
-    print(f"occupies {file_size:.2f} MB.", end='\r', flush=True)
+    print(f"occupies {file_size:.2f} MB.")
 
 # mean-squared loss (not RMS!)
 def loss_function(output, data):
@@ -154,7 +147,7 @@ class TrainingHistory():
         print("done", end="\r", flush=True)
 
 # train a single batch
-def train_batch(data, model, optimizer, training_history):
+def train_batch(data, model, optimizer, device, training_history=None):
     # set model to training mode (for batchnorm)
     model.train()
 
@@ -163,7 +156,7 @@ def train_batch(data, model, optimizer, training_history):
     #data = tg.data.Batch.from_data_list(data_list)
     time2 = time.time()
     data = data.to(device)
-    output = model(data.x, data.edge_index, data.edge_attr, n_norm=n_norm)
+    output = model(data.x, data.edge_index, data.edge_attr)
     loss, _ = loss_function(output,data)
 
     # backward pass
@@ -201,12 +194,14 @@ def batch_examples(example_list, batch_size):
         batch.example_list = sub_list
         batch_list.append(batch)
     return batch_list
-            
 
+
+symbol_to_number = training_config.symbol_to_number
+number_to_symbol = training_config.number_to_symbol
 # compute the testing losses
 # molecules_dict: name -> Molecule
-def compute_testing_loss(model, testing_batches, training_history, molecules_dict,
-                         epoch, minibatches_seen):
+def compute_testing_loss(model, testing_batches, device, relevant_elements, training_history,
+                         molecules_dict, epoch, minibatches_seen):
     print("\ntesting...", end="\r", flush=True)
 
     # set model to testing mode (for batchnorm)
@@ -223,7 +218,7 @@ def compute_testing_loss(model, testing_batches, training_history, molecules_dic
 
         with torch.no_grad():
             # run model
-            output = model(minibatch.x, minibatch.edge_index, minibatch.edge_attr, n_norm=n_norm)
+            output = model(minibatch.x, minibatch.edge_index, minibatch.edge_attr)
 
             # compute MSE
             loss, residuals = loss_function(output, minibatch)
@@ -289,8 +284,8 @@ def compare_models(model1, model2, data, tolerance=.01, copy_parameters=True):
         model2.load_state_dict(model1.state_dict())
     model1.eval()
     model2.eval()
-    output1 = model1(data.x, data.edge_index, data.edge_attr, n_norm=n_norm)
-    output2 = model2(data.x, data.edge_index, data.edge_attr, n_norm=n_norm)
+    output1 = model1(data.x, data.edge_index, data.edge_attr)
+    output2 = model2(data.x, data.edge_index, data.edge_attr)
     #print(torch.abs(output2 - output1) > tolerance)
     print(torch.cat((output1,output2),dim=1))
     print()
