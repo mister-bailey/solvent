@@ -517,7 +517,7 @@ class DatasetReader(Process):
                     self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
             if len(self.molecule_buffer) < self.SQL_fetch_size:
                 self.molecule_buffer += self.database.read_range(
-                    self.row_index, self.SQL_fetch_size + self.row_index)
+                    self.row_index, self.row_index + self.SQL_fetch_size)
                 self.row_index += self.SQL_fetch_size
 
         return examples_read
@@ -546,12 +546,10 @@ def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
             pipeline.put_data_neighbor(dn)
 
 
-position_tolerance = .00001
-shielding_tolerance = .000001
 # compares two different data neighbors structures (presumably generated in python and c++)
 # confirmed: C++ pipeline produces equivalent results to DataNeighbors
-
-
+position_tolerance = .00001
+shielding_tolerance = .000001
 def compare_data_neighbors(dn1, dn2):
     print("Comparing pair of Data Neighbors structures...")
     if dn1.pos.shape[0] != dn2.pos.shape[0]:
@@ -613,10 +611,13 @@ def test_data_neighbors(example, Rs_in, Rs_out, max_radius, molecule_dict):
     molecule = molecule_dict[dn1.name]
     features = torch.tensor(molecule.features, dtype=torch.float64)
     weights = torch.tensor(molecule.weights, dtype=torch.float64)
-    g = torch.tensor(
-        molecule.perturbed_geometries[0, :, :], dtype=torch.float64)
-    s = torch.tensor(
-        molecule.perturbed_shieldings[0], dtype=torch.float64).unsqueeze(-1)  # [1,N]
+    g = torch.tensor(molecule.perturbed_geometries, dtype=torch.float64)
+    if g.ndim == 3: g = g[0,...]
+    s = torch.tensor(molecule.perturbed_shieldings, dtype=torch.float64)
+    if s.ndim == 3:
+        print("Hello!")
+        s = s[...,0]
+    if s.ndim == 2: s = s[0,...]
     dn2 = dh.DataNeighbors(x=features, Rs_in=Rs_in, pos=g, r_max=max_radius,
                            self_interaction=True, name=molecule.name, weights=weights, y=s, Rs_out=Rs_out)
     compare_data_neighbors(dn1, dn2)

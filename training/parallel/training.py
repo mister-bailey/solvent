@@ -78,7 +78,7 @@ def main():
         model_dict = torch.load(model_filename)
         model_kwargs.update(model_dict['model_kwargs'])
         all_elements = model_dict['all_elements']
-        assert set(all_elements) == set(config.all_elements), "Model elements and config elements don't match!"
+        assert set(all_elements) == set(config.all_elements), "Loaded model elements and config elements don't match!"
     else:
         print("A brand new model was requested... ", end='')
         model_kwargs.update(config.model_kwargs)
@@ -93,7 +93,6 @@ def main():
 
     Rs_in = config.Rs_in
     Rs_out = config.Rs_out
-    assert Rs_in == model_kwargs['Rs_in'], "Loaded model has wrong number of elements!"
     max_radius = model_kwargs['max_radius']
 
     print("Building optimizer... ", end='')
@@ -157,11 +156,6 @@ def main():
             config.jiggles_per_molecule, config.n_molecule_processors, config.molecule_queue_max_size)
     testing_molecules_dict = pipeline.testing_molecules_dict
 
-
-    # setup processes that will read the training data
-    # when all examples have been exhausted, n_molecule_processors
-    # copies of DatasetSignal.STOP will be propagated through molecule_queue
-    # and data_neighbors_queue to the training loop to signal an end to the epoch
     print("\n=== Preprocessing Testing Data ===\n")
     print("Working...", end="\r", flush=True)
     time1 = time.time()
@@ -197,8 +191,6 @@ def main():
 
     ### training ###
     print("\n=== Training ===")
-
-    # the actual training
     from training_config import n_epochs, training_size, testing_interval, \
             checkpoint_interval, checkpoint_prefix
     training_history = TrainingHistory()
