@@ -4,10 +4,10 @@ from getpass import getpass
 
 from collections import Counter
 
-def inflate(s):
+def inflate(s, dtype=np.float64):
     s = re.sub('\s+', ',', s)
     s = re.sub('\[,', '[', s)
-    return np.array(ast.literal_eval(s))
+    return np.array(ast.literal_eval(s), dtype=dtype)
 
 class MysqlDB():
     """

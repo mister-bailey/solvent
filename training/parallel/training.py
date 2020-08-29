@@ -1,4 +1,4 @@
-import training_config as config
+from training_config import Config
 if __name__ != '__main__':
     print("spawning process...")
 if __name__ == '__main__': print("loading standard modules...")
@@ -41,6 +41,7 @@ def sub(c, keys):
     return {k:c[k] for k in keys}
 
 def main():
+    config = Config()
 
     ### initialize GPU ###
     device = config.device
@@ -110,8 +111,9 @@ def main():
     print("testing_size:                     ", config.testing_size)
     print("training_size:                    ", config.training_size)
     print("n_molecule_processors:            ", config.n_molecule_processors)
-    print("molecule_queue_max_size:          ", config.molecule_queue_max_size)
-    print("data_neighbors_queue_max_size:    ", config.data_neighbors_queue_max_size)
+    print("molecule_queue_cap:               ", config.molecule_queue_cap)
+    print("example_queue_cap:                ", config.example_queue_cap)
+    print("batch_queue_cap:                  ", config.batch_queue_cap)
     print("Rs_in:                            ", Rs_in)
     print("Rs_out:                           ", Rs_out)
     print("n_epochs:                         ", config.n_epochs)
@@ -185,15 +187,14 @@ def main():
     print("\n=== Starting molecule pipeline ===\n")
     print("Working...", end='\r', flush=True)
     relevant_elements = config.relevant_elements
-    pipeline = Pipeline(1, max_radius, Rs_in, Rs_out, all_elements, relevant_elements,
-            config.jiggles_per_molecule, config.n_molecule_processors, config.molecule_queue_max_size)
+    pipeline = Pipeline(config)
     testing_molecules_dict = pipeline.testing_molecules_dict
 
     print("\n=== Preprocessing Testing Data ===\n")
     print("Working...", end="\r", flush=True)
     time1 = time.time()
     pipeline.set_indices(test_set_indices)
-    pipeline.start_reading(testing_size, record_in_dict=True)
+    pipeline.start_reading(testing_size, batch_size=1, record_in_dict=True)
 
     # read in and process testing data directly to memory
     testing_examples = []
@@ -222,8 +223,12 @@ def main():
 
     ### training ###
     print("\n=== Training ===")
-    from training_config import n_epochs, training_size, testing_interval, \
-            checkpoint_interval, checkpoint_prefix
+    n_epochs = config.n_epochs
+    training_size = config.training_size
+    testing_interval = config.testing_interval
+    checkpoint_interval = config.checkpoint_interval
+    checkpoint_prefix = config.checkpoint_prefix
+
     training_history = TrainingHistory()
 
     pipeline.set_indices(training_shuffle)
