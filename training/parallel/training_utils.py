@@ -196,9 +196,10 @@ def batch_examples(example_list, batch_size):
         batch_list.append(batch)
     return batch_list
 
-
-symbol_to_number = training_config.symbol_to_number
-number_to_symbol = training_config.number_to_symbol
+from training_config import Config
+config = Config()
+symbol_to_number = config.symbol_to_number
+number_to_symbol = config.number_to_symbol
 # compute the testing losses
 # molecules_dict: name -> Molecule
 def compute_testing_loss(model, testing_batches, device, relevant_elements, training_history,

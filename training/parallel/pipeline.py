@@ -1,6 +1,6 @@
 import itertools
 from molecule_pipeline import MoleculePipeline
-import training_config
+#import training_config
 import e3nn.point.data_helpers as dh
 import e3nn
 import torch_geometric as tg
@@ -68,18 +68,19 @@ class Molecule():
         else:
             self.weights = weights
 
-    all_elements = []
+    one_hot_table = np.zeros((0,0))
+
+    @staticmethod
+    def initialize_one_hot_table(all_elements):
+        max_element = max(all_elements)
+        Molecule.one_hot_table = np.zeros((max_element+1, len(all_elements)), dtype=np.float64)
+        for i, e in enumerate(all_elements):
+            Molecule.one_hot_table[e][i] = 1.0
 
     # generates one-hots for a list of atomic_symbols
     @staticmethod
     def get_one_hots(atomic_numbers):
-        one_hots = []
-        for number in atomic_numbers:
-            number = training_config.atomic_number(number)
-            inner_list = [1. if number ==
-                          i else 0. for i in Molecule.all_elements]
-            one_hots.append(inner_list)
-        return np.array(one_hots)
+        return Molecule.one_hot_table[atomic_numbers]
 
     # compute weights for loss function
     @staticmethod
@@ -144,9 +145,7 @@ def Rs_size(Rs):
 
 
 class Pipeline():
-    def __init__(self, batch_size, max_radius, Rs_in, Rs_out, all_elements, relevant_elements, requested_jiggles=1,
-                 n_molecule_processors=1, molecule_cap=10000, example_cap=10000, batch_cap=100,
-                 share_batches=True, manager=None, new_process=True):
+    def __init__(self, config, share_batches=True, manager=None, new_process=True):
         if manager is None:
             manager = Manager()
         #self.manager = manager
@@ -160,15 +159,13 @@ class Pipeline():
         self.command_queue = manager.Queue(10)
         #self.molecule_queue = manager.Queue(max_size)
         self.molecule_pipeline = None
-        self.batch_queue = manager.Queue(batch_cap)
+        self.batch_queue = manager.Queue(config.batch_queue_cap)
         self.share_batches = share_batches
         # self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
         #                                    (self, max_radius, Rs_in, Rs_out))
         self.testing_molecules_dict = manager.dict()
-        self.dataset_reader = DatasetReader("dataset_reader", self, batch_size,
-                                            max_radius, Rs_in, Rs_out, all_elements, relevant_elements,
-                                            requested_jiggles, n_molecule_processors, molecule_cap, example_cap,
-                                            batch_cap, self.testing_molecules_dict, new_process)
+
+        self.dataset_reader = DatasetReader("dataset_reader", self, config, self.testing_molecules_dict, new_process)
         if new_process:
             self.dataset_reader.start()
 
@@ -345,37 +342,38 @@ class SetIndices(DatasetSignal):
 
 
 class DatasetReader(Process):
-    def __init__(self, name, pipeline,
-                 batch_size, max_radius, Rs_in, Rs_out, all_elements, relevant_elements,
-                 requested_jiggles, num_threads, molecule_cap, example_cap, batch_cap,
-                 testing_molecules_dict, shuffle_incoming=True, new_process=True):
+    def __init__(self, name, pipeline, config,
+                 testing_molecules_dict, shuffle_incoming=True, new_process=True, requested_jiggles=1):
         if new_process:
             super().__init__(group=None, target=None, name=name)
         self.pipeline = pipeline
+        self.config = config
+
         self.hdf5_file_list_index = 0          # which hdf5 file
         self.hdf5_file_index = 0               # which example within the hdf5 file
-        self.row_index = 0                     # current row, if reading from SQL
-        self.all_elements = all_elements
+        self.all_elements = config.all_elements
         self.requested_jiggles = requested_jiggles  # how many jiggles per file
         self.testing_molecules_dict = testing_molecules_dict   # molecule name -> Molecule
         self.molecule_pipeline = None
-        self.molecule_pipeline_args = (batch_size, max_radius, all_elements,
-                                       relevant_elements, num_threads, molecule_cap, example_cap, batch_cap)
+        self.molecule_pipeline_args = (config.batch_size, config.max_radius, config.all_elements,
+                                       config.relevant_elements, config.n_molecule_processors,
+                                       config.molecule_queue_cap, config.example_queue_cap,
+                                       config.batch_queue_cap)
         #self.molecule_number = 0
         self.index_pos = 0
         self.shuffle_incoming = shuffle_incoming
 
-        self.data_source = training_config.data_source
+        self.data_source = config.data_source
         if self.data_source == 'hdf5':
-            self.hdf5_filenames = training_config.hdf5_filenames   # hdf5 files to process
+            self.hdf5_filenames = config.hdf5_filenames   # hdf5 files to process
             self.read_examples = self.read_examples_from_file
-            if training_config.file_format == 0:
+            if config.file_format == 0:
                 self.read_hdf5 = self.read_hdf5_format_0
-            elif training_config.file_format == 1:
+            elif config.file_format == 1:
                 self.read_hdf5 = self.read_hdf5_format_1
         elif self.data_source == 'SQL':
-            self.connect_params = training_config.connect_params
-            self.SQL_fetch_size = training_config.SQL_fetch_size
+            self.connect_params = config.connect_params
+            self.SQL_fetch_size = config.SQL_fetch_size
             self.molecule_buffer = []
             self.read_examples = self.read_examples_from_SQL
             from mysql_df import MysqlDB
@@ -388,8 +386,8 @@ class DatasetReader(Process):
             self.molecule_pipeline = MoleculePipeline(*self.molecule_pipeline_args)
             self.pipeline.molecule_pipeline = self.molecule_pipeline
             self.indices = np.array([])
-        if Molecule.all_elements == []:
-            Molecule.all_elements = self.all_elements
+        if len(Molecule.one_hot_table) == 0:
+            Molecule.initialize_one_hot_table(self.all_elements)
 
         while True:
             command = self.pipeline.get_command()
@@ -468,7 +466,7 @@ class DatasetReader(Process):
                     molecule = Molecule(dataset_number, perturbed_geometries, perturbed_shieldings,
                                         atomic_symbols, symmetrical_atoms=symmetrical_atoms)
                     self.pipeline.put_molecule_to_ext(molecule)
-                    self.molecule_number += 1
+                    #self.molecule_number += 1
                     if record_in_dict:
                         self.testing_molecules_dict[molecule.name] = molecule
 
@@ -545,7 +543,7 @@ class DatasetReader(Process):
                         self.molecule_buffer = self.molecule_buffer[i:]
                         break
                     molecule = Molecule(str(smiles), data[:, 1:4], data[:, 4],
-                                        data[:, 0], weights=weights)
+                                        data[:, 0].astype(np.int32), weights=weights)
                     self.pipeline.put_molecule_to_ext(molecule)
                     if record_in_dict:
                         self.testing_molecules_dict[molecule.name] = molecule
@@ -560,32 +558,6 @@ class DatasetReader(Process):
 
         return examples_read
 
-#    def read_test_set_from_SQL(self, record_in_dict=True):
-#        buffer = self.database.read_rows(
-#            self.test_set_indices.tolist(), check_status=False)
-#        assert len(buffer) == len(
-#            self.test_set_indices), f"Missing test examples!\n  len(fetched_set) == {len(buffer)} but len(test_set_indices) == {len(self.test_set_indices)}"
-#        for _, data, weights, smiles in buffer:
-#            molecule = Molecule(str(smiles), data[:, 1:4], data[:, 4],
-#                                data[:, 0], weights=weights)
-#            self.pipeline.put_molecule_to_ext(molecule)
-#            if record_in_dict:
-#                self.testing_molecules_dict[molecule.name] = molecule
-#            while self.pipeline.ext_batch_ready():
-#                self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
-#        return len(buffer)
-
-#finished_idxs = None
-# generate a test set
-# guaranteed to be ascending, nonduplicate, and (at the time of calling) only finished rows
-#def generate_test_set_SQL(test_size, train_size, connect_params=None):
-#    global finished_idxs
-#    if not finished_idxs:
-#        from mysql_df import MysqlDB
-#        db = MysqlDB(connect_params)
-#        finished_idxs = np.array(db.get_finished_idxs(test_size + train_size), dtype=np.int32)
-#    indices = np.sort(np.random.choice(finished_idxs, test_size, replace=False))
-#    return indices
 
 # returns a random shuffle of the available indices, for test/train split and random training
 def generate_index_shuffle(size, connect_params, rng=None, seed=None):
