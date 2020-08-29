@@ -32,7 +32,7 @@ class MysqlDB():
             3 - error
     """
 
-    def __init__(self, connect_params, smiles_path=None, path=None):
+    def __init__(self, connect_params, smiles_path=None, path=None, create_table=False):
         if isinstance(connect_params, str):
             assert os.path.exists(connect_params)
             with open(connect_params, "r+") as f:
@@ -52,11 +52,12 @@ class MysqlDB():
         self.path = path
 
         # build table
-        con = pymysql.connect(**self.connect_params)
-        with con.cursor() as cursor:
-            cursor.execute("create table if not exists data (id integer primary key, data longtext, energy float, e_rel float, gdb_id tinytext, status int)")
-        con.commit()
-        con.close()
+        if create_table:
+            con = pymysql.connect(**self.connect_params)
+            with con.cursor() as cursor:
+                cursor.execute("create table if not exists data (id integer primary key, data longtext, energy float, e_rel float, gdb_id tinytext, status int)")
+            con.commit()
+            con.close()
 
 #        con = pymysql.connect(**self.connect_params)
 
@@ -80,31 +81,40 @@ class MysqlDB():
         con.close()
         return values
 
-    def read_rows(self, row_indices):
+    def read_rows(self, row_indices, check_status=True, randomize=True):
         """
-        Returns list of tuples (data, energy, e_rel, gdb_id, and status).
+        Returns list of tuples (id, data, weights, smiles).
+        """
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            command = "select id, data, weights, gdb_id from data where "
+            if check_status:
+                command += "status = 1 and weights is not null and "
+            command += "id in (" + ",".join(map(str, row_indices)) + ")"
+            if randomize:
+                command += " order by rand()"
+            #f"select id, data, weights, gdb_id from data where status = 1 and weights is not null and id in ({','.join(['%s']*len(row_indices))})", row_indices
+            result = cursor.execute(command)
+            rows = cursor.fetchall()
+
+        con.close()
+        return [(r[0], inflate(r[1]), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)]
+
+    def read_range(self, start_row, stop_row, check_status=True, randomize=True):
+        """
+        Returns list of tuples (id, data, weights, smiles).
         """
 
         con = pymysql.connect(**self.connect_params)
         with con.cursor() as cursor:
-            result = cursor.execute(f"select data, energy, e_rel, gdb_id, status, symmetric_atoms, weights from data where id in ({','.join(['%s']*len(row_indices))})", row_indices)
+            command = f"select id, data, weights, gdb_id from data where id >= {start_row} and id < {stop_row}"
+            if check_status:
+                command += " and status = 1 and weights is not null"
+            result = cursor.execute(command)
             rows = cursor.fetchall()
 
         con.close()
-        return [(inflate(r[0]), r[1], r[2], r[3], r[5], inflate(r[6])) for r in rows if r[4] == 1]
-
-    def read_range(self, start_row, stop_row):
-        """
-        Returns list of tuples (data, energy, e_rel, gdb_id, and status).
-        """
-
-        con = pymysql.connect(**self.connect_params)
-        with con.cursor() as cursor:
-            result = cursor.execute(f"select data, energy, e_rel, gdb_id, status, symmetric_atoms, weights from data limit {start_row}, {stop_row - start_row}")
-            rows = cursor.fetchall()
-
-        con.close()
-        return [(inflate(r[0]), r[1], r[2], r[3], r[5], inflate(r[6])) for r in rows if r[4] == 1]
+        return [(r[0], inflate(r[1]), inflate(r[2]), r[3]) for r in rows] #if r[4] == 1]
 
 
     def write(self, row_idxs, data, energy, e_rel, gdb_id, status, check=True):
@@ -159,6 +169,16 @@ class MysqlDB():
                 counter[row[0]] = row[1]
         con.close()
         return counter
+
+    def check_status(self, id):
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            result = cursor.execute(f"select status from data where id = {id}")
+            row = cursor.fetchall()
+
+        con.close()
+        return row[0][0]
+
 
     def set_status(self, row_idxs, status_id, check=True):
         """
@@ -232,11 +252,18 @@ class MysqlDB():
         con.commit()
         con.close()
 
-    def get_finished_idxs(self, block_size=1e4):
-        idxs = list()
+    def get_finished_idxs(self, limit=None, block_size=1e4):
         con = pymysql.connect(**self.connect_params)
         with con.cursor() as cursor:
-            result = cursor.execute("select id from data where status = 1")
+            result = cursor.execute(f"select id from data where status = 1 and weights is not null limit {limit}")
+            idxs = [x[0] for x in cursor.fetchall()]
+        con.close()
+        return idxs
+
+    def get_unfinished_idxs(self, start_row, stop_row):
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            result = cursor.execute(f"select id from data where id >= {start_row} and id < {stop_row} and (status != 1 or weights is null) order by id asc")
             idxs = [x[0] for x in cursor.fetchall()]
         con.close()
         return idxs
@@ -245,4 +272,5 @@ if __name__ == '__main__':
     # Test
     db = MysqlDB("local_mysql.yaml", None, None)
     print(f"Connected to {db.connect_params['db']}: {db.connect_params['user']}@{db.connect_params['host']}")
-    print(db.read_range(0,3))
+    rs = db.read_range(0,20,check_status=False)
+    for r in rs: print(r) 

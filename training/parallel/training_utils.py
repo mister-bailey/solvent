@@ -122,24 +122,25 @@ class TrainingHistory():
         self.residuals_by_molecule = residuals_by_molecule
         self.residuals_by_site_label = residuals_by_site_label
 
-    def write_files(self, checkpoint_prefix):
+    def write_files(self, checkpoint_prefix, save_graph=False, training_size=80000, batch_size=100):
         # save training/test loss graph
         print("                                                                                                  ", end="\r", flush=True)
-#        print("Saving test/train loss graph...", end="", flush=True)
-#        graph_filename = f"{checkpoint_prefix}-graph.png"
-#        n_minibatches = math.ceil(training_size/batch_size)
-#        x_test = []
-#        for epoch, minibatches in zip(self.epochs, self.minibatches):
-#            fractional_epoch = epoch + minibatches/n_minibatches - 1
-#            x_test.append(fractional_epoch)
-#        x_test = np.array(x_test)
-#        x_train = x_test - self.training_window_size / n_minibatches
-#        plt.figure(figsize=(12,8))
-#        plt.plot(x_train, self.training_losses, "ro-", label="train")
-#        plt.plot(x_test, self.testing_losses, "bo-", label="test")
-#        plt.legend(loc="best")
-#        plt.savefig(graph_filename)
-#
+        if save_graph:
+            print("Saving test/train loss graph...", end="", flush=True)
+            graph_filename = f"{checkpoint_prefix}-graph.png"
+            n_minibatches = math.ceil(training_size/batch_size)
+            x_test = []
+            for epoch, minibatches in zip(self.epochs, self.minibatches):
+                fractional_epoch = epoch + minibatches/n_minibatches - 1
+                x_test.append(fractional_epoch)
+            x_test = np.array(x_test)
+            x_train = x_test - self.training_window_size / n_minibatches
+            plt.figure(figsize=(12,8))
+            plt.plot(x_train, self.training_losses, "ro-", label="train")
+            plt.plot(x_test, self.testing_losses, "bo-", label="test")
+            plt.legend(loc="best")
+            plt.savefig(graph_filename)
+
         # save raw data
         history_filename = f"{checkpoint_prefix}-training_history.torch"
         print("saving training history...", end="", flush=True)

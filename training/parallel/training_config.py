@@ -73,11 +73,15 @@ elif data_source == 'SQL':
 jiggles_per_molecule = int(config['data']['jiggles_per_molecule'])
 
 # number of examples for test-train split
-# the examples picked are strictly in the order they appear
-# in the hdf5, but iteration over the set might vary due
-# to concurrent processing
 testing_size = int(config['data']['testing_size'])
 training_size = int(config['data']['training_size'])
+if 'test_train_shuffle' in config['data']:
+    test_train_shuffle = config['data']['test_train_shuffle']
+else:
+    test_train_shuffle = None
+
+
+#randomize_training = eval(config['data']['randomize_training'])
 
 # number of concurrent processes that create DataNeighbors
 n_molecule_processors = int(config['data']['n_molecule_processors'])
@@ -94,8 +98,12 @@ if load_model_from_file.lower() == "false" or load_model_from_file.lower() == "n
     load_model_from_file = False
 n_norm = float(config['model']['n_norm'])
 
+# import code for evaluating radial models
 from e3nn.radial import *
 from laurent import *
+from functools import partial
+
+# evaluate model kwargs
 model_kwargs = {key:eval(value) for (key,value) in config['model'].items()
                 if key not in {'load_model_from_file'}}
 Rs_in = [ (n_elements, 0, 1) ]  # n_features, rank 0 tensor, even parity

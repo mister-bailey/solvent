@@ -18,7 +18,7 @@ import e3nn
 import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
-from pipeline import Pipeline, Molecule, test_data_neighbors
+from pipeline import Pipeline, Molecule, test_data_neighbors, generate_index_shuffle
 from training_utils import TrainingHistory, train_batch, compute_testing_loss, checkpoint, batch_examples, compare_models
 from diagnostics import print_parameter_size, count_parameters, get_object_size
 from variable_networks import VariableParityNetwork
@@ -70,17 +70,18 @@ def main():
     load_model_from_file = config.load_model_from_file
     if load_model_from_file:
         model_filenames = glob(load_model_from_file)
-        if len(model_filenames) == 0:
+        if len(model_filenames) > 0:
+            model_filename = max(model_filenames, key = os.path.getctime)
+            print(f"Loading model from {model_filename}... ", end='')
+            model_dict = torch.load(model_filename)
+            model_kwargs.update(model_dict['model_kwargs'])
+            all_elements = model_dict['all_elements']
+            assert set(all_elements) == set(config.all_elements), "Loaded model elements and config elements don't match!"
+        else:
             print(f"Could not find any checkpoints matching '{load_model_from_file}'!")
-            exit()
-        model_filename = max(model_filenames, key = os.path.getctime)
-        print(f"Loading model from {model_filename}... ", end='')
-        model_dict = torch.load(model_filename)
-        model_kwargs.update(model_dict['model_kwargs'])
-        all_elements = model_dict['all_elements']
-        assert set(all_elements) == set(config.all_elements), "Loaded model elements and config elements don't match!"
-    else:
-        print("A brand new model was requested... ", end='')
+            load_model_from_file=False
+    if not load_model_from_file:
+        print("Building a fresh model... ", end='')
         model_kwargs.update(config.model_kwargs)
         all_elements = config.all_elements
 
@@ -146,8 +147,40 @@ def main():
         print(f"  {config.connect_params['db']}: {config.connect_params['user']}@{config.connect_params['host']}")
         #if 'passwd' not in config.connect_params:
         #    self.connect_params['passwd'] = getpass(prompt="Please enter password: ")
+    
+    ### load or generate test/train shuffle
 
-    ### prepare for training ###
+    testing_size = config.testing_size
+    training_size = config.training_size
+    if config.test_train_shuffle and os.path.isfile(config.test_train_shuffle):
+        print(f"Loading test/train shuffle indices from {config.test_train_shuffle}...")
+        test_train_shuffle = torch.load(config.test_train_shuffle)
+        if len(test_train_shuffle) != testing_size + training_size:
+            print(f"Saved test/train shuffle has size {len(test_train_shuffle)}, but config specifies size {testing_size + training_size}!")
+            generate_shuffle = True
+            if input("Will generate new shuffle. Overwrite old shuffle file? (y/n) ").strip().lower() == "y":
+                print("Ok.")
+            else:
+                config.test_train_shuffle = None
+                print("Ok. Will discard new shuffle after this run.")
+        else:
+            generate_shuffle = False 
+    else:
+        generate_shuffle = True
+ 
+    if generate_shuffle:
+        print(f"Generating new test/train shuffle from {testing_size + training_size} examples... ", end="")
+        test_train_shuffle = generate_index_shuffle(testing_size + training_size, config.connect_params)
+        print("Done.")
+        if config.test_train_shuffle:
+            print(f"Saving test/train shuffle indices to {config.test_train_shuffle}...")
+            torch.save(test_train_shuffle, config.test_train_shuffle)
+
+    test_set_indices, training_shuffle = test_train_shuffle[:testing_size], test_train_shuffle[testing_size:]
+
+        
+
+    ### set up molecule pipeline ###
 
     print("\n=== Starting molecule pipeline ===\n")
     print("Working...", end='\r', flush=True)
@@ -159,10 +192,8 @@ def main():
     print("\n=== Preprocessing Testing Data ===\n")
     print("Working...", end="\r", flush=True)
     time1 = time.time()
-    testing_size = config.testing_size
-    pipeline.start_reading(testing_size,True,True)  # (how many examples to process,
-                                                    #  whether to make Molecules,
-                                                    #  whether to save the molecules to a dict)
+    pipeline.set_indices(test_set_indices)
+    pipeline.start_reading(testing_size, record_in_dict=True)
 
     # read in and process testing data directly to memory
     testing_examples = []
@@ -195,6 +226,8 @@ def main():
             checkpoint_interval, checkpoint_prefix
     training_history = TrainingHistory()
 
+    pipeline.set_indices(training_shuffle)
+
     for epoch in range(1,n_epochs+1):
         print("                                                                                                ")
         print("Initializing...", end="\r", flush=True)
@@ -203,8 +236,8 @@ def main():
         pipeline.restart()
 
         # skip over the first testing_size examples
-        pipeline.start_reading(testing_size, False, False, batch_size=1, wait=True)
-        #pipeline.wait_till_done()
+        # not necessary if we've set a random test/train split
+        #pipeline.start_reading(testing_size, False, False, batch_size=1, wait=True)
 
         # process the next training_size examples
         pipeline.start_reading(training_size, True, False, batch_size=batch_size)

@@ -55,18 +55,19 @@ class Molecule():
         self.perturbed_geometries = perturbed_geometries
 
         # zero out shieldings for irrelevant atoms
-        for i,a in enumerate(atomic_numbers):
+        # for i,a in enumerate(atomic_numbers):
         #    #if isinstance(a, str): a = symbol_to_number[a]
-            if a not in training_config.relevant_elements:
-                perturbed_shieldings[...,i]=0.0  # (n_examples, n_atoms, 1)
-        self.perturbed_shieldings = perturbed_shieldings # (n_atoms, n_elements)
+        #    if a not in training_config.relevant_elements:
+        #        perturbed_shieldings[...,i]=0.0  # (n_examples, n_atoms, 1)
+        # (n_atoms, n_elements)
+        self.perturbed_shieldings = perturbed_shieldings
         self.features = Molecule.get_one_hots(atomic_numbers)
         if weights is None:
             self.weights = Molecule.get_weights(
                 atomic_numbers, symmetrical_atoms, None)   # (n_atoms,)
         else:
             self.weights = weights
-    
+
     all_elements = []
 
     # generates one-hots for a list of atomic_symbols
@@ -75,7 +76,8 @@ class Molecule():
         one_hots = []
         for number in atomic_numbers:
             number = training_config.atomic_number(number)
-            inner_list = [1. if number == i else 0. for i in Molecule.all_elements]
+            inner_list = [1. if number ==
+                          i else 0. for i in Molecule.all_elements]
             one_hots.append(inner_list)
         return np.array(one_hots)
 
@@ -90,7 +92,6 @@ class Molecule():
             for i in l:
                 weights[i] = weight
         return weights
-
 
 
 def str2array(s):
@@ -186,7 +187,7 @@ class Pipeline():
         set_semaphore(self.finished_reading, False)
         set_semaphore(self.knows, False)
         self.working.acquire()
-        self.command_queue.put(StartSignal(
+        self.command_queue.put(StartReading(
             examples_to_read, make_molecules, record_in_dict, batch_size))
         if wait:
             self.wait_till_done()
@@ -210,6 +211,23 @@ class Pipeline():
         self.working.acquire()
         self.command_queue.put(RestartSignal())
         # What to do if things are still in the pipe???
+
+    def set_indices(self, test_set_indices):
+        self.working.acquire()
+        self.command_queue.put(SetIndices(test_set_indices))
+        self.working.acquire()
+        self.command_queue.put(RestartSignal())
+
+    #def read_test_set(self, record_in_dict=True, batch_size=1):
+    #    #print("Start reading...")
+    #    assert check_semaphore(
+    #        self.finished_reading), "Tried to start reading file, but already reading!"
+    #    with self.in_pipe.get_lock():
+    #        assert self.in_pipe.value == 0, "Tried to start reading, but examples already in pipe!"
+    #    set_semaphore(self.finished_reading, False)
+    #    set_semaphore(self.knows, False)
+    #    self.working.acquire()
+    #    self.command_queue.put(ReadTestSet(record_in_dict, batch_size))
 
     def any_coming(self):  # returns True if at least one example is coming
         wait_semaphore(self.knows)
@@ -290,7 +308,7 @@ class RestartSignal(DatasetSignal):
         return "RestartSignal"
 
 
-class StartSignal(DatasetSignal):
+class StartReading(DatasetSignal):
     def __init__(self, examples_to_read, make_molecules=True, record_in_dict=False, batch_size=None):
         self.examples_to_read = examples_to_read
         self.make_molecules = make_molecules
@@ -298,10 +316,30 @@ class StartSignal(DatasetSignal):
         self.batch_size = batch_size
 
     def __str__(self):
-        r = f"StartSignal(examples_to_read={self.examples_to_read}, make_molecules={self.make_molecules}, record_in_dict={self.record_in_dict}"
+        r = f"StartReading(examples_to_read={self.examples_to_read}, make_molecules={self.make_molecules}, record_in_dict={self.record_in_dict}"
         if self.batch_size is not None:
             r += f", batch_size={self.batch_size}"
         return r + ")"
+
+
+class SetIndices(DatasetSignal):
+    def __init__(self, indices):
+        """
+        indices should be sorted!!!
+        """
+        self.indices = indices
+
+    def __str__(self):
+        return f"SetIndices({len(self.indices)})"
+
+
+#class ReadTestSet(DatasetSignal):
+#    def __init__(self, record_in_dict=True, batch_size=1):
+#        self.record_in_dict = record_in_dict
+#        self.batch_size = batch_size
+#
+#    def __str__(self):
+#        return f"ReadTestSet(record_in_dict={self.record_in_dict}, batch_size={self.batch_size})"
 
 # process that reads an hdf5 file and returns Molecules
 
@@ -310,7 +348,7 @@ class DatasetReader(Process):
     def __init__(self, name, pipeline,
                  batch_size, max_radius, Rs_in, Rs_out, all_elements, relevant_elements,
                  requested_jiggles, num_threads, molecule_cap, example_cap, batch_cap,
-                 testing_molecules_dict, new_process=True):
+                 testing_molecules_dict, shuffle_incoming=True, new_process=True):
         if new_process:
             super().__init__(group=None, target=None, name=name)
         self.pipeline = pipeline
@@ -323,11 +361,9 @@ class DatasetReader(Process):
         self.molecule_pipeline = None
         self.molecule_pipeline_args = (batch_size, max_radius, all_elements,
                                        relevant_elements, num_threads, molecule_cap, example_cap, batch_cap)
-        #print(f"batch_size = {batch_size}")
-        #print(f"max_radius = {max_radius}")
-        #print(f"all_elements = {all_elements}")
-        #print(f"relevant_elements = {relevant_elements}")
-        self.molecule_number = 0
+        #self.molecule_number = 0
+        self.index_pos = 0
+        self.shuffle_incoming = shuffle_incoming
 
         self.data_source = training_config.data_source
         if self.data_source == 'hdf5':
@@ -345,12 +381,13 @@ class DatasetReader(Process):
             from mysql_df import MysqlDB
             self.database = MysqlDB(self.connect_params)
 
+
     # process the data in all hdf5 files
     def run(self):
         if self.molecule_pipeline is None:
-            self.molecule_pipeline = MoleculePipeline(
-                *self.molecule_pipeline_args)
+            self.molecule_pipeline = MoleculePipeline(*self.molecule_pipeline_args)
             self.pipeline.molecule_pipeline = self.molecule_pipeline
+            self.indices = np.array([])
         if Molecule.all_elements == []:
             Molecule.all_elements = self.all_elements
 
@@ -360,17 +397,17 @@ class DatasetReader(Process):
             if isinstance(command, RestartSignal):
                 self.hdf5_file_list_index = 0
                 self.hdf5_file_index = 0
-                self.row_index = 0
+                self.index_pos = 0
+                #self.molecule_number = 0
                 self.molecule_buffer = []
-                # self.molecule_pipeline.notify_starting()
-            elif isinstance(command, StartSignal):
-                self.molecule_number = 0
+            elif isinstance(command, StartReading):
                 self.molecule_pipeline.notify_starting(command.batch_size)
-                self.read_examples(command.examples_to_read,
-                                   command.make_molecules, command.record_in_dict)
+                self.read_examples(command.examples_to_read, command.make_molecules, command.record_in_dict)
                 self.pipeline.set_finished_reading()
                 while self.molecule_pipeline.any_batch_coming():
                     self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
+            elif isinstance(command, SetIndices):
+                self.indices = command.indices
             else:
                 raise ValueError("unexpected work type")
             self.pipeline.working.release()
@@ -502,7 +539,7 @@ class DatasetReader(Process):
     def read_examples_from_SQL(self, examples_to_read, make_molecules, record_in_dict):
         examples_read = 0
         while examples_read < examples_to_read:
-            for i, (data, _, _, smiles, _, weights) in enumerate(self.molecule_buffer):
+            for i, (_, data, weights, smiles) in enumerate(self.molecule_buffer):
                 if make_molecules:
                     if examples_read == examples_to_read:
                         self.molecule_buffer = self.molecule_buffer[i:]
@@ -516,12 +553,49 @@ class DatasetReader(Process):
                 while self.pipeline.ext_batch_ready():
                     self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
             if len(self.molecule_buffer) < self.SQL_fetch_size:
-                self.molecule_buffer += self.database.read_range(
-                    self.row_index, self.row_index + self.SQL_fetch_size)
-                self.row_index += self.SQL_fetch_size
+                self.molecule_buffer += self.database.read_rows(np.nditer(
+                    self.indices[self.index_pos : self.index_pos + self.SQL_fetch_size]),
+                    randomize = self.shuffle_incoming)
+                self.index_pos += self.SQL_fetch_size
 
         return examples_read
 
+#    def read_test_set_from_SQL(self, record_in_dict=True):
+#        buffer = self.database.read_rows(
+#            self.test_set_indices.tolist(), check_status=False)
+#        assert len(buffer) == len(
+#            self.test_set_indices), f"Missing test examples!\n  len(fetched_set) == {len(buffer)} but len(test_set_indices) == {len(self.test_set_indices)}"
+#        for _, data, weights, smiles in buffer:
+#            molecule = Molecule(str(smiles), data[:, 1:4], data[:, 4],
+#                                data[:, 0], weights=weights)
+#            self.pipeline.put_molecule_to_ext(molecule)
+#            if record_in_dict:
+#                self.testing_molecules_dict[molecule.name] = molecule
+#            while self.pipeline.ext_batch_ready():
+#                self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
+#        return len(buffer)
+
+#finished_idxs = None
+# generate a test set
+# guaranteed to be ascending, nonduplicate, and (at the time of calling) only finished rows
+#def generate_test_set_SQL(test_size, train_size, connect_params=None):
+#    global finished_idxs
+#    if not finished_idxs:
+#        from mysql_df import MysqlDB
+#        db = MysqlDB(connect_params)
+#        finished_idxs = np.array(db.get_finished_idxs(test_size + train_size), dtype=np.int32)
+#    indices = np.sort(np.random.choice(finished_idxs, test_size, replace=False))
+#    return indices
+
+# returns a random shuffle of the available indices, for test/train split and random training
+def generate_index_shuffle(size, connect_params, rng=None, seed=None):
+    from mysql_df import MysqlDB
+    db = MysqlDB(connect_params)
+    indices = np.array(db.get_finished_idxs(size), dtype=np.int32)
+    if rng is None:
+        rng = np.random.default_rng(seed)
+    rng.shuffle(indices)
+    return indices
 
 # method that takes Molecules from a queue (molecule_queue) and places
 # DataNeighbors into another queue (data_neighbors_queue)
@@ -550,6 +624,8 @@ def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
 # confirmed: C++ pipeline produces equivalent results to DataNeighbors
 position_tolerance = .00001
 shielding_tolerance = .000001
+
+
 def compare_data_neighbors(dn1, dn2):
     print("Comparing pair of Data Neighbors structures...")
     if dn1.pos.shape[0] != dn2.pos.shape[0]:
@@ -612,12 +688,14 @@ def test_data_neighbors(example, Rs_in, Rs_out, max_radius, molecule_dict):
     features = torch.tensor(molecule.features, dtype=torch.float64)
     weights = torch.tensor(molecule.weights, dtype=torch.float64)
     g = torch.tensor(molecule.perturbed_geometries, dtype=torch.float64)
-    if g.ndim == 3: g = g[0,...]
+    if g.ndim == 3:
+        g = g[0, ...]
     s = torch.tensor(molecule.perturbed_shieldings, dtype=torch.float64)
     if s.ndim == 3:
         print("Hello!")
-        s = s[...,0]
-    if s.ndim == 2: s = s[0,...]
+        s = s[..., 0]
+    if s.ndim == 2:
+        s = s[0, ...]
     dn2 = dh.DataNeighbors(x=features, Rs_in=Rs_in, pos=g, r_max=max_radius,
                            self_interaction=True, name=molecule.name, weights=weights, y=s, Rs_out=Rs_out)
     compare_data_neighbors(dn1, dn2)
