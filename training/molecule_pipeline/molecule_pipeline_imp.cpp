@@ -7,16 +7,16 @@ Copyright Michael Bailey 2020
 #include <time.h>
 
 Molecule::Molecule(int num_examples, int num_atoms, PyArrayObject *positions, PyArrayObject *features,
-            PyArrayObject *output, PyArrayObject * weights, string name) :
+            PyArrayObject *output, PyArrayObject * weights, int ID) :
             num_examples(num_examples), num_atoms(num_atoms), positions(positions),
-            features(features), output(output), weights(weights), name(name)
+            features(features), output(output), weights(weights), ID(ID)
             {   
 }
 
 Molecule::Molecule(int num_examples, int num_atoms, PyArrayObject *positions, const itype *elements,
-            PyArrayObject *output, PyArrayObject * weights, string name) :
+            PyArrayObject *output, PyArrayObject * weights, int ID) :
             num_examples(num_examples), num_atoms(num_atoms), positions(positions),
-            output(output), weights(weights), name(name) {
+            output(output), weights(weights), ID(ID) {
     printf("Constructing molecule from data A\n");
     npy_intp fdim[2] = {num_atoms, BatchGenerator::num_elements};
     printf("Constructing molecule from data B\n");
@@ -41,9 +41,9 @@ Molecule::~Molecule(){
 }
 
 Example::Example(int num_atoms, vec3 *positions, void *features, void *output, ftype *weights,
-            int num_edges, pair<itype,itype> *edge_indices, vec3 *edge_vecs, string name, int n_examples) :
+            int num_edges, pair<itype,itype> *edge_indices, vec3 *edge_vecs, int ID, int n_examples) :
             num_atoms(num_atoms), positions(positions), features(features), output(output), weights(weights),
-            num_edges(num_edges), edge_indices(edge_indices), edge_vecs(edge_vecs), name(name), n_examples(n_examples) {
+            num_edges(num_edges), edge_indices(edge_indices), edge_vecs(edge_vecs), ID(ID), n_examples(n_examples) {
 }
 
 Example::~Example(){
@@ -107,7 +107,7 @@ void BatchGenerator::processMolecule(Molecule *m) {
 
         Example *example;
         {MEMSAFE example = new Example(m->num_atoms, (vec3 *)malloc(tot_psize),
-                malloc(tot_fsize), malloc(tot_ysize), (ftype *)malloc(tot_wsize), num_edges, edge_indices, edge_vecs, m->name);}
+                malloc(tot_fsize), malloc(tot_ysize), (ftype *)malloc(tot_wsize), num_edges, edge_indices, edge_vecs, m->ID);}
         memcpy(example->positions, pos, tot_psize);
         memcpy(example->features, feat, tot_fsize);
         memcpy(example->output, out, tot_ysize);
@@ -159,7 +159,7 @@ Example *BatchGenerator::makeBatch() {
         total_edges += e->num_edges;
     }
     if(examples.size()==0) return NULL;
-    string name = examples[0]->name;
+    int ID = examples[0]->ID;
 
     vec3 *positions;
     {MEMSAFE positions = (vec3 *)malloc(total_atoms * sizeof(vec3));}
@@ -194,7 +194,7 @@ Example *BatchGenerator::makeBatch() {
     }
 
     {MEMSAFE return new Example(total_atoms, positions, features, output, weights,
-            total_edges, edge_indices, edge_vecs, name, examples.size());}
+            total_edges, edge_indices, edge_vecs, ID, examples.size());}
 }
 
 void BatchGenerator::loopMakeBatches(int max) {

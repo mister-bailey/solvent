@@ -50,13 +50,13 @@ public:
     PyArrayObject *features;
     PyArrayObject *output;
     PyArrayObject *weights;
-    string name;
+    int ID;
 
     Molecule(int num_examples, int num_atoms, PyArrayObject *positions,
-            PyArrayObject *features, PyArrayObject *output, PyArrayObject *weights, string name="");
+            PyArrayObject *features, PyArrayObject *output, PyArrayObject *weights, int ID=-1);
 
     Molecule(int num_examples, int num_atoms, PyArrayObject *positions,
-            const itype *elements, PyArrayObject *output, PyArrayObject *weights, string name="");
+            const itype *elements, PyArrayObject *output, PyArrayObject *weights, int ID=-1);
 
     ~Molecule();
 };
@@ -73,11 +73,11 @@ public:
     int num_edges;
     pair<itype,itype> *edge_indices;
     vec3 *edge_vecs;
-    string name;
+    int ID;
     int n_examples = 1;
 
     Example(int num_atoms, vec3 *positions, void *features, void *output, ftype *weights,
-            int num_edges, pair<itype,itype> *edge_indices, vec3 *edge_vecs, string name="", int n_examples=1);
+            int num_edges, pair<itype,itype> *edge_indices, vec3 *edge_vecs, int ID=-1, int n_examples=1);
     ~Example();
     void releaseBuffers();
 };

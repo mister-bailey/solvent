@@ -88,7 +88,7 @@ PyObject* molecule_pipeline_ext_getNextBatch(PyObject* self, PyObject* args, PyO
 
 	//printf("Returning batch from C++...\n");
 
-	PyObject *r = Py_BuildValue("NNNNNNsi", positions, features, output, weights, edge_indices, edge_vecs, e->name.c_str(), e->n_examples);
+	PyObject *r = Py_BuildValue("NNNNNNii", positions, features, output, weights, edge_indices, edge_vecs, e->ID, e->n_examples);
 	e->releaseBuffers();
 	delete e;
 	return r;
@@ -155,15 +155,15 @@ PyObject* molecule_pipeline_ext_notifyFinished(PyObject* self, PyObject* bgc) {
 	Py_RETURN_NONE;
 }
 
-PyDoc_STRVAR(molecule_pipeline_ext_putMolecule_doc, "putMolecule(batch_generator, positions, features, output, weights, name=\"\", block = True)");
+PyDoc_STRVAR(molecule_pipeline_ext_putMolecule_doc, "putMolecule(batch_generator, positions, features, output, weights, ID, block = True)");
 PyObject* molecule_pipeline_ext_putMolecule(PyObject* self, PyObject* args, PyObject* kwargs) {
 	PyObject* capsule;
 	PyArrayObject *positions, *features, *output, *weights;
-	const char *name = "";
+	int ID=-1;
 	bool block = true;
 
-	static char* keywords[] = { "", "positions", "features", "output", "weights", "name", "block", NULL};
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|sp", keywords, &capsule, &positions, &features, &output, &weights, &name, &block))
+	static char* keywords[] = { "", "positions", "features", "output", "weights", "ID", "block", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|ip", keywords, &capsule, &positions, &features, &output, &weights, &ID, &block))
 		return NULL;
 	BatchGenerator *bg = (BatchGenerator*)PyCapsule_GetPointer(capsule, "BatchGenerator");
 
@@ -188,7 +188,7 @@ PyObject* molecule_pipeline_ext_putMolecule(PyObject* self, PyObject* args, PyOb
 		num_atoms = PyArray_DIM(positions, 0);
 	}
 
-	Molecule *m = new Molecule(num_examples, num_atoms, positions, features, output, weights, string(name));
+	Molecule *m = new Molecule(num_examples, num_atoms, positions, features, output, weights, ID);
 
 	bool r = bg->putMolecule(m, block);
 	if(!r) delete m;
@@ -196,15 +196,15 @@ PyObject* molecule_pipeline_ext_putMolecule(PyObject* self, PyObject* args, PyOb
 	return Py_BuildValue("O", r ? Py_True : Py_False);
 }
 
-PyDoc_STRVAR(molecule_pipeline_ext_putMoleculeData_doc, "putMoleculeData(batch_generator, positions, elements, output, weights, name=\"\", block = True)");
+PyDoc_STRVAR(molecule_pipeline_ext_putMoleculeData_doc, "putMoleculeData(batch_generator, positions, elements, output, weights, ID, block = True)");
 PyObject* molecule_pipeline_ext_putMoleculeData(PyObject* self, PyObject* args, PyObject* kwargs) {
 	PyObject* capsule;
 	PyArrayObject* positions, *elements, *output, *weights;
-	const char *name = "";
+	int ID=-1;
 	bool block = true;
 
-	static char* keywords[] = { "", "positions", "elements", "output", "weights", "name", "block", NULL};
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|sp", keywords, &capsule, &positions, &elements, &output, &weights, &name, &block))
+	static char* keywords[] = { "", "positions", "elements", "output", "weights", "ID", "block", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|ip", keywords, &capsule, &positions, &elements, &output, &weights, &ID, &block))
 		return NULL;
 	BatchGenerator *bg = (BatchGenerator*)PyCapsule_GetPointer(capsule, "BatchGenerator");
 
@@ -227,7 +227,7 @@ PyObject* molecule_pipeline_ext_putMoleculeData(PyObject* self, PyObject* args, 
 
 	printf("Ext E\n");
 
-	Molecule *m = new Molecule(num_examples, num_atoms, positions, (itype *)PyArray_DATA(elements), output, weights, string(name));
+	Molecule *m = new Molecule(num_examples, num_atoms, positions, (itype *)PyArray_DATA(elements), output, weights, ID);
 
 	printf("Ext G\n");
 

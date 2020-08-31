@@ -5,14 +5,14 @@ from torch import as_tensor, transpose
 #as_tensor = None
 
 class ExampleBatch():
-    def __init__(self, pos, x, y, weights, edge_index, edge_attr, name=None, n_examples=1):
+    def __init__(self, pos, x, y, weights, edge_index, edge_attr, ID=-1, n_examples=1):
         self.pos = pos
         self.x = x
         self.y = y
         self.weights = weights
         self.edge_index = edge_index
         self.edge_attr = edge_attr
-        self.name = name
+        self.ID = ID
         self.n_examples = n_examples
 
     # this is in-place!
@@ -65,13 +65,13 @@ class MoleculePipeline():
         molecule_pipeline_ext.notifyFinished(self.capsule)
         
     def put_molecule(self, m, block=True):
-        return molecule_pipeline_ext.putMolecule(self.capsule, m.perturbed_geometries, m.features,
-            m.perturbed_shieldings, m.weights, m.name, block)
+        return molecule_pipeline_ext.putMolecule(self.capsule, m.ID, m.perturbed_geometries, m.features,
+            m.perturbed_shieldings, m.weights, block)
 
     # send data without first building a Molecule object.
     # Send atomic numbers, and 1-hots will be computed in C++
-    def put_molecule_data(self, data, atomic_numbers, weights, name, block=True):
-        return molecule_pipeline_ext.putMoleculeData(self.capsule, data[...,:3], atomic_numbers, data[...,3], weights, name, block)
+    def put_molecule_data(self, data, atomic_numbers, weights, ID, block=True):
+        return molecule_pipeline_ext.putMoleculeData(self.capsule, data[...,:3], atomic_numbers, data[...,3], weights, ID, block)
 
     def batch_ready(self):
         return molecule_pipeline_ext.batchReady(self.capsule)
@@ -99,11 +99,11 @@ class MoleculePipeline():
         if r is None:
             print("Batch is None!")
             return None
-        pos, x, y, weights, edge_indexT, edge_attr, name, n_examples = r
+        pos, x, y, weights, edge_indexT, edge_attr, ID, n_examples = r
         (pos, x, y, weights, edge_index, edge_attr) = (as_tensor(pos), as_tensor(x), as_tensor(y),
                 as_tensor(weights), transpose(as_tensor(edge_indexT),0,1), as_tensor(edge_attr))
 
-        return ExampleBatch(pos, x, y, weights, edge_index, edge_attr, name, n_examples)
+        return ExampleBatch(pos, x, y, weights, edge_index, edge_attr, ID, n_examples)
 
     
 #if __name__ != '__main__':
