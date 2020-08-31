@@ -19,7 +19,8 @@ import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
 from pipeline import Pipeline, Molecule, test_data_neighbors, generate_index_shuffle
-from training_utils import TrainingHistory, train_batch, compute_testing_loss, checkpoint, batch_examples, compare_models
+from training_utils import train_batch, batch_examples, save_checkpoint, compare_models
+from history import TrainTestHistory
 from diagnostics import print_parameter_size, count_parameters, get_object_size
 from variable_networks import VariableParityNetwork
 from functools import partial
@@ -228,50 +229,43 @@ def main():
     testing_interval = config.training.testing_interval
     checkpoint_interval = config.training.checkpoint_interval
     checkpoint_prefix = config.training.checkpoint_prefix
+    batches_per_epoch = math.ceil(training_size/batch_size)
 
-    training_history = TrainingHistory()
+    history = TrainTestHistory(batches_per_epoch, checkpoint_prefix, testing_batches,
+                               relevant_elements, testing_molecules_dict, device, config.number_to_symbol)
 
     pipeline.set_indices(training_shuffle)
 
     for epoch in range(1,n_epochs+1):
         print("                                                                                                ")
-        print("Initializing...", end="\r", flush=True)
+        print(f"Starting epoch {epoch}...", end="\r", flush=True)
 
-        # reset the counters for reading the input files
+        # return to the start of the training set
         pipeline.restart()
 
-        # skip over the first testing_size examples
-        # not necessary if we've set a random test/train split
-        #pipeline.start_reading(testing_size, False, False, batch_size=1, wait=True)
-
-        # process the next training_size examples
+        # process the training examples
         pipeline.start_reading(training_size, True, False, batch_size=batch_size)
 
         # iterate through all training examples
-        minibatches_seen = 0
-        #training_data_list = []
-        n_minibatches = math.ceil(training_size/batch_size)
+        batch_number = 0
+        
         while pipeline.any_coming():
             time1 = time.time()
             data = pipeline.get_batch()
-
             t_wait = time.time()-time1
-            bqsize = pipeline.batch_queue.qsize()
 
-            minibatches_seen += 1
-            train_batch(data, model, optimizer, device, training_history)
-            #train_batch(data, model2, optimizer2, None)
-            training_history.print_training_status_update(epoch, minibatches_seen, n_minibatches, t_wait, 0, bqsize)
+            batch_number += 1
+            batch_loss, train_time = train_batch(data, model, optimizer, device)
+            
+            history.train.log_batch(train_time, t_wait, data.n_examples, len(data.x), batch_loss, epoch=epoch)
 
-            if minibatches_seen % testing_interval == 0:
-                #compare_models(model, model2, data, copy_parameters=True)
-                compute_testing_loss(model, testing_batches, device, relevant_elements, training_history,
-                                     testing_molecules_dict, epoch, minibatches_seen)
+            if batch_number % testing_interval == 0:
+                history.run_test(model)
 
-            if minibatches_seen % checkpoint_interval == 0:
+            if batch_number % checkpoint_interval == 0:
                 checkpoint_filename = f"{checkpoint_prefix}-epoch_{epoch:03d}-checkpoint.torch"
-                checkpoint(model_kwargs, model, checkpoint_filename, optimizer, all_elements)
-                training_history.write_files(checkpoint_prefix)
+                save_checkpoint(model_kwargs, model, checkpoint_filename, optimizer, all_elements)
+                history.save()
 
     # clean up
     print("                                                                                                 ")
