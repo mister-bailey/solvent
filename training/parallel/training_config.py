@@ -2,6 +2,7 @@ from glob import glob
 import configparser
 import sys
 import os
+from collections.abc import Mapping
 
 # import code for evaluating radial models
 from e3nn.radial import *
@@ -10,16 +11,94 @@ from functools import partial
 
 
 # parses a delimited string
-def parse_list(s, separator=",", func=None):
-    fields = s.split(separator)
-    return_list = [ i.strip() for i in fields ]
-    if func is not None:
-        return_list = list(map(func, return_list))
-    return return_list
+def parse_list(s, separator=",", func=lambda x : x):
+    return [ func(i.strip()) for i in s.split(separator) ]
+
+title_case = lambda s : s.title()
+
+class NO_STORE:
+    def __init__(self):
+        return
+
+# dummy section:
+class SECTION:
+    def __init__(self):
+        self._mapping = {}
+
+class ConfigSection:
+    def __init__(self, mapping, load_all=True, eval_func=lambda x : x, eval_funcs={}, eval_error=True,
+            key_func=lambda x : x, include_keys=None, exclude_keys={}, default=None, defaults={}):
+        self._mapping = dict(mapping)
+        self._eval_func = eval_func
+        self._eval_funcs = eval_funcs
+        self._eval_error = eval_error
+        self._key_func = key_func
+        self._include_keys = include_keys
+        self._exclude_keys = set(exclude_keys)
+        self._default = default
+        self._defaults = defaults
+
+        if load_all:
+            self.load_all()
+
+    def load_all(self):
+        if self._include_keys is None:
+            keys = set(self._mapping.keys())
+        else:
+            keys = set(self._include_keys)
+        keys.update(self._defaults.keys())
+        for key in keys:
+            if key not in self._exclude_keys:
+                self.load(key)
+
+    def load(self, key, eval_func=None, key_func=None, eval_error=None, **kwargs):
+        if not eval_func:
+            if key in self._eval_funcs:
+                eval_func = self._eval_funcs[key]
+            else:
+                eval_func = self._eval_func
+        if not key_func:
+            key_func = self._key_func
+        if eval_error is None:
+            eval_error = self._eval_error
+        
+        if key not in self._mapping:
+            if 'default' in kwargs:
+                default = kwargs['default']
+            elif key in self._defaults:
+                default = self._defaults[key]
+            else:
+                default = self._default
+            if default == NO_STORE:
+                return
+            value = default
+        else:
+            try:
+                value = eval_func(self._mapping[key])
+            except Exception:
+                if eval_error:
+                    raise
+                value = self._mapping[key]
+        self._mapping[key] = value
+
+        key = key_func(key).replace(" ", "_")
+        self.__dict__[key] = value
+        return value
+
+    # For pickling:
+    def __getstate__(self):
+        self_dict = self.__dict__.copy()
+        for key in self.__dict__.keys():
+            if key.startswith('_'):
+                del self_dict[key]
+        return self_dict
+
+    def items(self):
+        return ((key, value) for (key, value) in self.__dict__.items()
+            if (not key.startswith('_')) and key not in {'load_all', 'load', 'items'}) 
 
 
 class Config:
-
     def atomic_number(self, e):
         if isinstance(e, str):
             if e.isnumeric(): return int(e)
@@ -27,109 +106,142 @@ class Config:
         else:
             return e
 
+    def load_section(self, name, store_as=None, **kwargs):
+        section = ConfigSection(self._parser[name], **kwargs)
+        if not store_as:
+            store_as = name
+        store_as = store_as.replace(" ", "_")
+        self.__dict__[store_as] = section
+        return section
+
+    def load_section_into_base(self, name, **kwargs):
+        section = ConfigSection(self._parser[name], **kwargs)
+        self.__dict__.update(section.items())
+        return section.items()
+
+    # For pickling:
+    def __getstate__(self):
+        self_dict = self.__dict__.copy()
+        for key in self.__dict__.keys():
+            if key.startswith('_'):
+                del self_dict[key]
+        return self_dict
+
+    def items(self):
+        return ((key, value) for (key, value) in self.__dict__.items()
+            if (not key.startswith('_')) and key not in
+            {'atomic_number', 'load_section', 'load_section_into_base', 'items'}) 
+
     # parses config files
     # later filenames overwrite values from earlier filenames
     # (so you can have mini configs that change just a few settings)
-    def __init__(self, *filenames):
-        config = configparser.ConfigParser()
+    def __init__(self, *filenames, _set_names=False):
+        if _set_names: # Only here to satisfy pylint and the code highlighter
+            self._set_names()
+        self._parser = configparser.ConfigParser()
 
         if len(filenames) == 0:
             filenames = ["training.ini"]
             if len(sys.argv) > 1:
                 filenames += sys.argv[1:]
                 
-        config.read(filenames)
+        self._parser.read(filenames)
 
-        # where to do the training
-        self.device = config['general']['device']
-
-        self.symbol_to_number = {}
-        self.number_to_symbol = {}
         # dictionaries between symbols and numbers
-        #print("Building atomic symbol dictionary...")
-        for symbol, num_str in config.items('symbols_numbers_dict'):
-            symbol = symbol.title()
-            num = int(num_str)
-            self.symbol_to_number[symbol] = num
-            self.number_to_symbol[num] = symbol
+        self.load_section('symbols_numbers_dict', key_func=title_case, eval_func=int)
+        self.symbol_to_number = {s:n for s,n in self.symbols_numbers_dict.items()}
+        self.number_to_symbol = {n:s for s,n in self.symbols_numbers_dict.items()}
         #print(self.symbol_to_number)
         
-        # all expected elements
-        self.all_elements = [self.atomic_number(e) for e in parse_list(config['general']['all_elements'])]
+        # device, all_elements, relevant_elements
+        efunc = partial(parse_list, func=self.atomic_number)
+        self.load_section_into_base('general', eval_funcs={
+            'all_elements':efunc, 'relevant_elements':efunc})
+
+        # all elements
         assert len(self.all_elements) == len(set(self.all_elements)), "duplicate element"
         self.n_elements = len(self.all_elements)
 
-        # which elements to predict NMR shieldings for
-        self.relevant_elements = [self.atomic_number(e) for e in parse_list(config['general']['relevant_elements'])]
+        # elements to predict NMR shieldings for
         for e in self.relevant_elements:
             assert e in self.all_elements, f"relevant element {e} not found in all_elements"
         assert len(self.relevant_elements) == len(set(self.relevant_elements)), "duplicate element"
-
+        
+        # see reference training.ini for all the parameters in 'data'
+        self.load_section('data', eval_func=eval, eval_funcs={'hdf5_filenames':glob}, eval_error=False)
         # where the raw data are stored
-        self.data_source = config['data']['source']
-        if self.data_source.startswith('hdf5'):
-            if self.data_source == 'hdf5_0':
-                self.file_format = 0
+        if self.data.source.startswith('hdf5'):
+            if self.data.source == 'hdf5_0':
+                self.data.file_format = 0
             else:
-                self.file_format = 1
-            self.data_source = 'hdf5'
-            self.hdf5_filenames = list(sorted(glob(config['data']['hdf5_filenames'])))
-            assert len(self.hdf5_filenames) > 0, "no files found!"
-        elif self.data_source == 'SQL':
-            self.connect_params = dict(config['connect_params'])
-            self.SQL_fetch_size = int(config['data']['SQL_fetch_size'])
-
-
-
-        # how many jiggles to get per file
-        # this is not checked--requesting an invalid number will cause a runtime error
-        self.jiggles_per_molecule = int(config['data']['jiggles_per_molecule'])
-
-        # number of examples for test-train split
-        self.testing_size = int(config['data']['testing_size'])
-        self.training_size = int(config['data']['training_size'])
-        if 'test_train_shuffle' in config['data']:
-            self.test_train_shuffle = config['data']['test_train_shuffle']
-        else:
-            self.test_train_shuffle = None
-
-
-        #randomize_training = eval(config['data']['randomize_training'])
-
-        # number of concurrent processes that create DataNeighbors
-        self.n_molecule_processors = int(config['data']['n_molecule_processors'])
-
-        # queue capacities:
-        self.molecule_queue_cap = int(config['data']['molecule_queue_cap'])
-        self.example_queue_cap = int(config['data']['example_queue_cap'])
-        self.batch_queue_cap = int(config['data']['batch_queue_cap'])
+                self.data.file_format = 1
+            self.data.source = 'hdf5'
+            assert len(self.data.hdf5_filenames) > 0, "no files found!"
+        elif self.data.source == 'SQL':
+            self.data.connect_params = self.load_section('connect_params')._mapping
+            self.data.SQL_fetch_size = self.data.sql_fetch_size
 
         # model parameters
-        if 'load_model_from_file' not in config['model']:
-            self.load_model_from_file = False
-        else:
-            self.load_model_from_file = config['model']['load_model_from_file']
-            if self.load_model_from_file.lower() == "false" or self.load_model_from_file.lower() == "none":
-                self.load_model_from_file = False
-
-        self.n_norm = float(config['model']['n_norm'])
-
-        # evaluate model kwargs
-        self.model_kwargs = {key:eval(value) for (key,value) in config['model'].items()
-                        if key not in {'load_model_from_file'}}
-        self.Rs_in = [ (self.n_elements, 0, 1) ]  # n_features, rank 0 tensor, even parity
-        self.Rs_out = [ (1,0,1) ]            # one output per atom, rank 0 tensor, even parity
-        self.model_kwargs['Rs_in'] = self.Rs_in
-        self.model_kwargs['Rs_out'] = self.Rs_out
-        self.max_radius = self.model_kwargs['max_radius']
-
+        self.load_section('model', defaults={'model_file':None}, eval_func=eval, eval_error=False)
+        self.model.kwargs = self.model._mapping
+        del self.model.kwargs['model_file']
+        self.model.Rs_in = [ (self.n_elements, 0, 1) ]  # n_features, rank 0 tensor, even parity
+        self.model.Rs_out = [ (1,0,1) ]            # one output per atom, rank 0 tensor, even parity
+        self.model.kwargs['Rs_in'] = self.model.Rs_in
+        self.model.kwargs['Rs_out'] = self.model.Rs_out
+        self.max_radius = self.model.max_radius
 
         # training parameters
-        self.n_epochs = int(config['training']['n_epochs'])                        # number of epochs
-        self.batch_size = int(config['training']['batch_size'])                    # minibatch sizes
-        self.testing_interval = int(config['training']['testing_interval'])        # compute testing loss every n minibatches
-        self.checkpoint_interval = int(config['training']['checkpoint_interval'])  # save model every n minibatches
-        self.checkpoint_prefix = config['training']['checkpoint_prefix']           # save checkpoints to files starting with this
-        self.learning_rate = float(config['training']['learning_rate'])            # learning rate
+        self.load_section('training', eval_func=eval, eval_funcs={'checkpoint_prefix':str})
+
+
+    # the only purpose of this section is to get rid of the red squiggly lines from
+    # not "defining" parameters explicitly in this file
+    def _set_names(self):
+        self.device = ""
+        self.all_elements = []
+        self.relevant_elements = []
+
+        self.symbols_numbers_dict = {}
+
+        self.data = SECTION()
+        self.data.source = ""
+        self.data.hdf5_filenames = []
+
+        self.data.jiggles_per_molecule = 0
+        self.data.testing_size = 0
+        self.data.training_size = 0
+        self.data.test_train_shuffle = ""
+
+        self.data.n_molecule_processors = 0
+        self.data.molecule_queue_cap = 0
+        self.data.example_queue_cap = 0
+        self.data.batch_queue_cap = 0
+
+        self.data.SQL_fetch_size = 0
+        self.data.connect_params = {}
+
+        self.connect_params = SECTION()
+        self.connect_params.host = ""
+        self.connect_params.user = ""
+        self.connect_params.passwd = ""
+        self.connect_params.db = ""
+
+        self.model = SECTION()
+        self.model.model_file = ""
+        self.model.kwargs = {}
+        self.model.max_radius = 0
+        self.model.Rs_in = [ (0,0,0) ]   # n_features, rank 0 tensor, even parity
+        self.model.Rs_out = [ (0,0,0) ]  # one output per atom, rank 0 tensor, even parity
+
+        self.training = SECTION()
+        self.training.n_epochs = 0             # number of epochs
+        self.training.batch_size = 0           # minibatch sizes
+        self.training.testing_interval = 0     # compute testing loss every n minibatches
+        self.training.checkpoint_interval = 0  # save model every n minibatches
+        self.training.checkpoint_prefix = ""   # save checkpoints to files starting with this
+        self.training.learning_rate = 0        # learning rate
+
+
 
 

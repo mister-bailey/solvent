@@ -159,7 +159,7 @@ class Pipeline():
         self.command_queue = manager.Queue(10)
         #self.molecule_queue = manager.Queue(max_size)
         self.molecule_pipeline = None
-        self.batch_queue = manager.Queue(config.batch_queue_cap)
+        self.batch_queue = manager.Queue(config.data.batch_queue_cap)
         self.share_batches = share_batches
         # self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
         #                                    (self, max_radius, Rs_in, Rs_out))
@@ -214,17 +214,6 @@ class Pipeline():
         self.command_queue.put(SetIndices(test_set_indices))
         self.working.acquire()
         self.command_queue.put(RestartSignal())
-
-    #def read_test_set(self, record_in_dict=True, batch_size=1):
-    #    #print("Start reading...")
-    #    assert check_semaphore(
-    #        self.finished_reading), "Tried to start reading file, but already reading!"
-    #    with self.in_pipe.get_lock():
-    #        assert self.in_pipe.value == 0, "Tried to start reading, but examples already in pipe!"
-    #    set_semaphore(self.finished_reading, False)
-    #    set_semaphore(self.knows, False)
-    #    self.working.acquire()
-    #    self.command_queue.put(ReadTestSet(record_in_dict, batch_size))
 
     def any_coming(self):  # returns True if at least one example is coming
         wait_semaphore(self.knows)
@@ -355,25 +344,26 @@ class DatasetReader(Process):
         self.requested_jiggles = requested_jiggles  # how many jiggles per file
         self.testing_molecules_dict = testing_molecules_dict   # molecule name -> Molecule
         self.molecule_pipeline = None
-        self.molecule_pipeline_args = (config.batch_size, config.max_radius, config.all_elements,
-                                       config.relevant_elements, config.n_molecule_processors,
-                                       config.molecule_queue_cap, config.example_queue_cap,
-                                       config.batch_queue_cap)
+        self.molecule_pipeline_args = (config.training.batch_size, config.max_radius, config.all_elements,
+                                       config.relevant_elements, config.data.n_molecule_processors,
+                                       config.data.molecule_queue_cap, config.data.example_queue_cap,
+                                       config.data.batch_queue_cap)
+        #print(f"molecule_pipeline_args = {self.molecule_pipeline_args}")
         #self.molecule_number = 0
         self.index_pos = 0
         self.shuffle_incoming = shuffle_incoming
 
-        self.data_source = config.data_source
+        self.data_source = config.data.source
         if self.data_source == 'hdf5':
-            self.hdf5_filenames = config.hdf5_filenames   # hdf5 files to process
+            self.hdf5_filenames = config.data.hdf5_filenames   # hdf5 files to process
             self.read_examples = self.read_examples_from_file
-            if config.file_format == 0:
+            if config.data.file_format == 0:
                 self.read_hdf5 = self.read_hdf5_format_0
-            elif config.file_format == 1:
+            elif config.data.file_format == 1:
                 self.read_hdf5 = self.read_hdf5_format_1
         elif self.data_source == 'SQL':
-            self.connect_params = config.connect_params
-            self.SQL_fetch_size = config.SQL_fetch_size
+            self.connect_params = config.data.connect_params
+            self.SQL_fetch_size = config.data.SQL_fetch_size
             self.molecule_buffer = []
             self.read_examples = self.read_examples_from_SQL
             from mysql_df import MysqlDB

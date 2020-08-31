@@ -68,9 +68,9 @@ def main():
         'batch_norm': True,
         }
 
-    load_model_from_file = config.load_model_from_file
-    if load_model_from_file:
-        model_filenames = glob(load_model_from_file)
+    model_file = config.model.model_file
+    if model_file:
+        model_filenames = glob(model_file)
         if len(model_filenames) > 0:
             model_filename = max(model_filenames, key = os.path.getctime)
             print(f"Loading model from {model_filename}... ", end='')
@@ -79,27 +79,27 @@ def main():
             all_elements = model_dict['all_elements']
             assert set(all_elements) == set(config.all_elements), "Loaded model elements and config elements don't match!"
         else:
-            print(f"Could not find any checkpoints matching '{load_model_from_file}'!")
-            load_model_from_file=False
-    if not load_model_from_file:
+            print(f"Could not find any checkpoints matching '{model_file}'!")
+            model_file=False
+    if not model_file:
         print("Building a fresh model... ", end='')
-        model_kwargs.update(config.model_kwargs)
+        model_kwargs.update(config.model.kwargs)
         all_elements = config.all_elements
 
     model = VariableParityNetwork(**model_kwargs)
     print(model_kwargs)
-    if load_model_from_file:
+    if model_file:
         model.load_state_dict(model_dict["state_dict"])
     model.to(device)
     print("Done.")
 
-    Rs_in = config.Rs_in
-    Rs_out = config.Rs_out
+    Rs_in = config.model.Rs_in
+    Rs_out = config.model.Rs_out
     max_radius = model_kwargs['max_radius']
 
     print("Building optimizer... ", end='')
-    optimizer = torch.optim.Adam(model.parameters(), config.learning_rate)
-    if load_model_from_file:
+    optimizer = torch.optim.Adam(model.parameters(), config.training.learning_rate)
+    if model_file:
         optimizer.load_state_dict(model_dict["optimizer_state_dict"])
     print("Done.")
 
@@ -107,21 +107,21 @@ def main():
     print("\n=== Configuration ===\n")
     print("all_elements:                     ", all_elements)
     print("relevant_elements:                ", config.relevant_elements)
-    print("jiggles_per_molecule:             ", config.jiggles_per_molecule)
-    print("testing_size:                     ", config.testing_size)
-    print("training_size:                    ", config.training_size)
-    print("n_molecule_processors:            ", config.n_molecule_processors)
-    print("molecule_queue_cap:               ", config.molecule_queue_cap)
-    print("example_queue_cap:                ", config.example_queue_cap)
-    print("batch_queue_cap:                  ", config.batch_queue_cap)
+    print("jiggles_per_molecule:             ", config.data.jiggles_per_molecule)
+    print("testing_size:                     ", config.data.testing_size)
+    print("training_size:                    ", config.data.training_size)
+    print("n_molecule_processors:            ", config.data.n_molecule_processors)
+    print("molecule_queue_cap:               ", config.data.molecule_queue_cap)
+    print("example_queue_cap:                ", config.data.example_queue_cap)
+    print("batch_queue_cap:                  ", config.data.batch_queue_cap)
     print("Rs_in:                            ", Rs_in)
     print("Rs_out:                           ", Rs_out)
-    print("n_epochs:                         ", config.n_epochs)
-    print("batch_size:                       ", config.batch_size)
-    print("testing_interval:                 ", config.testing_interval)
-    print("checkpoint_interval:              ", config.checkpoint_interval)
-    print("checkpoint_prefix:                ", config.checkpoint_prefix)
-    print("learning_rate:                    ", config.learning_rate)
+    print("n_epochs:                         ", config.training.n_epochs)
+    print("batch_size:                       ", config.training.batch_size)
+    print("testing_interval:                 ", config.training.testing_interval)
+    print("checkpoint_interval:              ", config.training.checkpoint_interval)
+    print("checkpoint_prefix:                ", config.training.checkpoint_prefix)
+    print("learning_rate:                    ", config.training.learning_rate)
     print("muls:                             ", model_kwargs['muls'])
     print("lmaxes:                           ", model_kwargs['lmaxes'])
     print("max_radius:                       ", max_radius)
@@ -139,31 +139,31 @@ def main():
     print(optimizer)
 
 
-    if config.data_source == 'hdf5':
-        print(f"Will use training data from {len(config.hdf5_filenames)} files:")
-        for filename in config.hdf5_filenames[:4]:
+    if config.data.source == 'hdf5':
+        print(f"Will use training data from {len(config.data.hdf5_filenames)} files:")
+        for filename in config.data.hdf5_filenames[:4]:
             print(f"   {filename}")
         print("   Etc...")
-    elif config.data_source == 'SQL':
+    elif config.data.source == 'SQL':
         print(f"Using training data from database:")
-        print(f"  {config.connect_params['db']}: {config.connect_params['user']}@{config.connect_params['host']}")
+        print(f"  {config.connect_params.db}: {config.connect_params.user}@{config.connect_params.host}")
         #if 'passwd' not in config.connect_params:
         #    self.connect_params['passwd'] = getpass(prompt="Please enter password: ")
     
     ### load or generate test/train shuffle
 
-    testing_size = config.testing_size
-    training_size = config.training_size
-    if config.test_train_shuffle and os.path.isfile(config.test_train_shuffle):
-        print(f"Loading test/train shuffle indices from {config.test_train_shuffle}...")
-        test_train_shuffle = torch.load(config.test_train_shuffle)
+    testing_size = config.data.testing_size
+    training_size = config.data.training_size
+    if config.data.test_train_shuffle and os.path.isfile(config.data.test_train_shuffle):
+        print(f"Loading test/train shuffle indices from {config.data.test_train_shuffle}...")
+        test_train_shuffle = torch.load(config.data.test_train_shuffle)
         if len(test_train_shuffle) != testing_size + training_size:
             print(f"Saved test/train shuffle has size {len(test_train_shuffle)}, but config specifies size {testing_size + training_size}!")
             generate_shuffle = True
             if input("Will generate new shuffle. Overwrite old shuffle file? (y/n) ").strip().lower() == "y":
                 print("Ok.")
             else:
-                config.test_train_shuffle = None
+                config.data.test_train_shuffle = None
                 print("Ok. Will discard new shuffle after this run.")
         else:
             generate_shuffle = False 
@@ -172,15 +172,16 @@ def main():
  
     if generate_shuffle:
         print(f"Generating new test/train shuffle from {testing_size + training_size} examples... ", end="")
-        test_train_shuffle = generate_index_shuffle(testing_size + training_size, config.connect_params)
+        test_train_shuffle = generate_index_shuffle(testing_size + training_size, config.data.connect_params)
         print("Done.")
-        if config.test_train_shuffle:
-            print(f"Saving test/train shuffle indices to {config.test_train_shuffle}...")
-            torch.save(test_train_shuffle, config.test_train_shuffle)
+        if config.data.test_train_shuffle:
+            print(f"Saving test/train shuffle indices to {config.data.test_train_shuffle}...")
+            torch.save(test_train_shuffle, config.data.test_train_shuffle)
 
-    test_set_indices, training_shuffle = test_train_shuffle[:testing_size], test_train_shuffle[testing_size:]
+    test_set_indices, training_shuffle = test_train_shuffle[:testing_size], test_train_shuffle[testing_size:]        
 
-        
+    #print("Test set indices:")
+    #print(test_set_indices[:100], "...")
 
     ### set up molecule pipeline ###
 
@@ -213,7 +214,7 @@ def main():
     assert len(testing_examples) == testing_size, \
         f">>>>> expected {testing_size} testing examples but got {len(testing_examples)}"
     
-    batch_size = config.batch_size
+    batch_size = config.training.batch_size
     print("Batching test examples...")
     testing_batches = batch_examples(testing_examples, batch_size)
 
@@ -223,11 +224,10 @@ def main():
 
     ### training ###
     print("\n=== Training ===")
-    n_epochs = config.n_epochs
-    training_size = config.training_size
-    testing_interval = config.testing_interval
-    checkpoint_interval = config.checkpoint_interval
-    checkpoint_prefix = config.checkpoint_prefix
+    n_epochs = config.training.n_epochs
+    testing_interval = config.training.testing_interval
+    checkpoint_interval = config.training.checkpoint_interval
+    checkpoint_prefix = config.training.checkpoint_prefix
 
     training_history = TrainingHistory()
 
