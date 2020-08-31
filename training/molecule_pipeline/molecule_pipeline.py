@@ -65,8 +65,8 @@ class MoleculePipeline():
         molecule_pipeline_ext.notifyFinished(self.capsule)
         
     def put_molecule(self, m, block=True):
-        return molecule_pipeline_ext.putMolecule(self.capsule, m.ID, m.perturbed_geometries, m.features,
-            m.perturbed_shieldings, m.weights, block)
+        return molecule_pipeline_ext.putMolecule(self.capsule, m.perturbed_geometries, m.features,
+            m.perturbed_shieldings, m.weights, m.ID, block)
 
     # send data without first building a Molecule object.
     # Send atomic numbers, and 1-hots will be computed in C++

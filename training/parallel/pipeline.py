@@ -18,35 +18,15 @@ torch.set_default_dtype(torch.float64)
 
 ### Code to Generate Molecules ###
 
-#symbol_to_number = training_config.symbol_to_number
-#number_to_symbol = training_config.number_to_symbol
-
-# all expected elements
-#all_elements = training_config.all_elements
-#n_elements = len(all_elements)
-
-# so we can normalize training data for the nuclei to be predicted
-#relevant_elements = training_config.relevant_elements
-
-# cpu or gpu
-#device = training_config.device
-
-# other parameters
-#testing_size = training_config.testing_size
-
-### Code for Storing Training Data ###
-
-# represents a molecule and all its jiggled training examples
-
-
 class Molecule():
-    def __init__(self, name,
+    def __init__(self, ID, smiles,
                  perturbed_geometries,
                  perturbed_shieldings,
                  atomic_numbers,
                  symmetrical_atoms=None,        # list of lists of 0-indexed atom numbers
                  weights=None):
-        self.name = name                                       # name of molecule
+        self.ID = ID     # database id for molecule
+        self.smiles = smiles
         # vector of strings of length n_atoms
         self.atomic_numbers = atomic_numbers
         # number of atoms
@@ -250,9 +230,9 @@ class Pipeline():
                 self.in_pipe.value += 1
         return True
 
-    def put_molecule_data(self, data, atomic_numbers, weights, name, block=True):
+    def put_molecule_data(self, data, atomic_numbers, weights, ID, block=True):
         r = self.molecule_pipeline.put_molecule_data(
-            data, atomic_numbers, weights, name, block)
+            data, atomic_numbers, weights, ID, block)
         if not r:
             return False
         with self.in_pipe.get_lock():
@@ -342,7 +322,7 @@ class DatasetReader(Process):
         self.hdf5_file_index = 0               # which example within the hdf5 file
         self.all_elements = config.all_elements
         self.requested_jiggles = requested_jiggles  # how many jiggles per file
-        self.testing_molecules_dict = testing_molecules_dict   # molecule name -> Molecule
+        self.testing_molecules_dict = testing_molecules_dict   # ID -> Molecule
         self.molecule_pipeline = None
         self.molecule_pipeline_args = (config.training.batch_size, config.max_radius, config.all_elements,
                                        config.relevant_elements, config.data.n_molecule_processors,
@@ -415,87 +395,22 @@ class DatasetReader(Process):
                 break
         return examples_read
 
-    # process the data in this hdf5 file
-    # requested_jiggles examples will be taken: 1 (default) or listlike
-    # make_molecules: boolean that tells us if we should make Molecules objects
-    #                 or just skip over these records
-    # returns: number of molecules read from this file
+    # I've removed the original hdf5 reader, since we don't use that format any more
+    # you can find it on the github
     def read_hdf5_format_0(self, filename, examples_to_read, make_molecules, record_in_dict):
-        with h5py.File(filename, "r") as h5:
-            h5_keys = (k for k in h5.keys() if k.startswith("data_"))
-
-            examples_read = 0
-            for dataset_name in itertools.islice(h5_keys, self.hdf5_file_index, None):
-                n_examples = min(examples_to_read - examples_read,
-                                 self.requested_jiggles, h5[dataset_name].shape[0])
-                if make_molecules:
-                    geometries_and_shieldings = h5[dataset_name][:n_examples]
-
-                    assert np.shape(geometries_and_shieldings)[
-                        2] == 4, "should be x,y,z,shielding"
-
-                    dataset_number = dataset_name.split("_")[1]
-
-                    # NOTE: We don't split a single molecule between different batches!
-                    perturbed_geometries = geometries_and_shieldings[:, :, :3]
-                    perturbed_shieldings = geometries_and_shieldings[:, :, 3]
-                    n_atoms = perturbed_geometries.shape[1]
-
-                    atomic_symbols = h5.attrs[f"atomic_symbols_{dataset_number}"]
-
-                    assert len(atomic_symbols) == n_atoms, \
-                        f"expected {n_atoms} atomic_symbols, but got {len(atomic_symbols)}"
-                    for a in atomic_symbols:
-                        assert a in self.all_elements, \
-                            f"unexpected element!  need to add {a} to all_elements"
-
-                    symmetrical_atoms = str2array(
-                        h5.attrs[f"symmetrical_atoms_{dataset_number}"])
-
-                    # store the results
-                    molecule = Molecule(dataset_number, perturbed_geometries, perturbed_shieldings,
-                                        atomic_symbols, symmetrical_atoms=symmetrical_atoms)
-                    self.pipeline.put_molecule_to_ext(molecule)
-                    #self.molecule_number += 1
-                    if record_in_dict:
-                        self.testing_molecules_dict[molecule.name] = molecule
-
-                    while self.pipeline.ext_batch_ready():
-                        self.pipeline.put_batch(
-                            self.pipeline.get_batch_from_ext())
-
-                # update counters
-                examples_read += n_examples
-                self.hdf5_file_index += 1
-
-                if examples_read == examples_to_read:
-                    # read enough examples, stopped partway through file
-                    self.pipeline.set_finished_reading()
-                    return examples_read
-
-        # reached end of file without enough examples
-        self.hdf5_file_list_index += 1
-        self.hdf5_file_index = 0
-        return examples_read
+        raise Exception("Old hdf5 format not supported!")
 
     def read_hdf5_format_1(self, filename, examples_to_read, make_molecules, record_in_dict):
         with h5py.File(filename, "r") as h5:
             if make_molecules:
                 examples_read = 0
                 for key, dataset in itertools.islice(h5.items(), self.hdf5_file_index, None):
+                    molecule = Molecule(int(key), str(dataset.attrs["smiles"]), dataset[..., :3],
+                            dataset[..., 3], dataset.attrs["atomic_numbers"],
+                            weights=dataset.attrs["weights"])
+                    self.pipeline.put_molecule_to_ext(molecule)
                     if record_in_dict:
-                        molecule = Molecule(str(dataset.attrs["smiles"]), dataset[..., :3], dataset[..., 3],
-                                            dataset.attrs["atomic_numbers"], weights=dataset.attrs["weights"])
-                        self.pipeline.put_molecule_to_ext(molecule)
-                        self.testing_molecules_dict[molecule.name] = molecule
-                    else:
-                        #print("Putting molecule data...")
-                        # r = self.pipeline.put_molecule_data(dataset, dataset.attrs["atomic_numbers"],
-                        #         dataset.attrs["weights"], str(dataset.attrs["smiles"]))
-                        #print(f"Put molecule? {r}")
-                        molecule = Molecule(str(dataset.attrs["smiles"]), dataset[..., :3], dataset[..., 3],
-                                            dataset.attrs["atomic_numbers"], weights=dataset.attrs["weights"])
-                        self.pipeline.put_molecule_to_ext(molecule)
+                        self.testing_molecules_dict[molecule.ID] = molecule
 
                     while self.pipeline.ext_batch_ready():
                         self.pipeline.put_batch(
@@ -527,16 +442,16 @@ class DatasetReader(Process):
     def read_examples_from_SQL(self, examples_to_read, make_molecules, record_in_dict):
         examples_read = 0
         while examples_read < examples_to_read:
-            for i, (_, data, weights, smiles) in enumerate(self.molecule_buffer):
+            for i, (ID, data, weights, smiles) in enumerate(self.molecule_buffer):
                 if make_molecules:
                     if examples_read == examples_to_read:
                         self.molecule_buffer = self.molecule_buffer[i:]
                         break
-                    molecule = Molecule(str(smiles), data[:, 1:4], data[:, 4],
+                    molecule = Molecule(ID, str(smiles), data[:, 1:4], data[:, 4],
                                         data[:, 0].astype(np.int32), weights=weights)
                     self.pipeline.put_molecule_to_ext(molecule)
                     if record_in_dict:
-                        self.testing_molecules_dict[molecule.name] = molecule
+                        self.testing_molecules_dict[molecule.ID] = molecule
                 examples_read += 1
                 while self.pipeline.ext_batch_ready():
                     self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
@@ -577,7 +492,7 @@ def process_molecule(pipeline, max_radius, Rs_in, Rs_out):
             s = torch.tensor(
                 molecule.perturbed_shieldings[j], dtype=torch.float64).unsqueeze(-1)  # [1,N]
             dn = dh.DataNeighbors(x=features, Rs_in=Rs_in, pos=g, r_max=max_radius,
-                                  self_interaction=True, name=molecule.name,
+                                  self_interaction=True, ID=molecule.ID,
                                   weights=weights, y=s, Rs_out=Rs_out)
             pipeline.put_data_neighbor(dn)
 
@@ -646,7 +561,7 @@ def compare_data_neighbors(dn1, dn2):
 
 def test_data_neighbors(example, Rs_in, Rs_out, max_radius, molecule_dict):
     dn1 = example
-    molecule = molecule_dict[dn1.name]
+    molecule = molecule_dict[dn1.ID]
     features = torch.tensor(molecule.features, dtype=torch.float64)
     weights = torch.tensor(molecule.weights, dtype=torch.float64)
     g = torch.tensor(molecule.perturbed_geometries, dtype=torch.float64)
@@ -659,5 +574,5 @@ def test_data_neighbors(example, Rs_in, Rs_out, max_radius, molecule_dict):
     if s.ndim == 2:
         s = s[0, ...]
     dn2 = dh.DataNeighbors(x=features, Rs_in=Rs_in, pos=g, r_max=max_radius,
-                           self_interaction=True, name=molecule.name, weights=weights, y=s, Rs_out=Rs_out)
+                           self_interaction=True, ID=molecule.ID, weights=weights, y=s, Rs_out=Rs_out)
     compare_data_neighbors(dn1, dn2)

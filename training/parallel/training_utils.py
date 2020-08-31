@@ -191,7 +191,7 @@ def batch_examples(example_list, batch_size):
         edge_index = torch.cat(sub_list_edges, axis=1)
         edge_attr = torch.cat([e.edge_attr for e in sub_list])
 
-        batch = ExampleBatch(pos, x, y, weights, edge_index, edge_attr, name=f"batch {bn}", n_examples=len(sub_list))
+        batch = ExampleBatch(pos, x, y, weights, edge_index, edge_attr, n_examples=len(sub_list))
         batch.example_list = sub_list
         batch_list.append(batch)
     return batch_list
@@ -234,12 +234,12 @@ def compute_testing_loss(model, testing_batches, device, relevant_elements, trai
             residuals = residuals.squeeze(-1).cpu().numpy()
             atom_tally = 0
             for example in minibatch.example_list:
-                molecule = molecules_dict[example.name]
+                molecule = molecules_dict[example.ID]
                 n_atoms = molecule.n_atoms
-                if example.name not in residuals_by_molecule:
-                    residuals_by_molecule[example.name] = []
+                if example.ID not in residuals_by_molecule:
+                    residuals_by_molecule[example.ID] = []
                 subset = residuals[atom_tally:atom_tally+n_atoms]
-                residuals_by_molecule[example.name].append(subset)
+                residuals_by_molecule[example.ID].append(subset)
                 atom_tally += n_atoms
             assert atom_tally == residuals.shape[0], "Testing atom count mismatch!"
 
@@ -249,14 +249,14 @@ def compute_testing_loss(model, testing_batches, device, relevant_elements, trai
 
     # reshape residual data
     all_residuals = { element : [] for element in relevant_elements }  # element -> [residuals]
-    for name, results in residuals_by_molecule.items():
+    for ID, results in residuals_by_molecule.items():
         results = np.array(results).T
-        molecule = molecules_dict[name]
+        molecule = molecules_dict[ID]
         for atomic_index, this_result in enumerate(results):
             element = molecule.atomic_numbers[atomic_index]
             if element not in relevant_elements:
                 continue
-            site_label = "f{name}_{number_to_symbol[element]}{atomic_index+1}"
+            site_label = "f{ID}_{number_to_symbol[element]}{atomic_index+1}"
             residuals_by_site_label[site_label] = this_result
             all_residuals[element].extend(this_result)
 
