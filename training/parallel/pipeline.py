@@ -493,8 +493,10 @@ def generate_multi_jiggles_set(n_molecules, n_jiggles, connect_params, randomize
     from mysql_df import MysqlDB
     db = MysqlDB(connect_params)
     smiles = db.get_distinct_columns('gdb_id', n_molecules, check_status=True)
+    assert len(smiles) == n_molecules, "Couldn't get requested number of molecules!"
     indices = np.concatenate([np.array(db.get_columns_from_column(
                 'id', 'gdb_id', s, n_jiggles, check_status=True)) for s in smiles])
+    assert len(indices) == n_molecules * n_jiggles, "Couldn't get requested number of jiggles!"
     if randomize:
         if rng is None:
             rng = np.random.default_rng(seed)
