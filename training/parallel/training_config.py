@@ -182,7 +182,8 @@ class Config:
         # see reference training.ini for all the parameters in 'data'
         self.load_section('data', eval_func=eval, eval_funcs={'hdf5_filenames':glob},
                           defaults={'randomize':True, 'get_from_start':False,
-                          'multi_jiggle_data':False, 'jiggles_per_molecule':1}, eval_error=False)
+                          'multi_jiggle_data':False, 'jiggles_per_molecule':1,
+                          'test_train_shuffle':None}, eval_error=False)
         # where the raw data are stored
         if self.data.source.startswith('hdf5'):
             if self.data.source == 'hdf5_0':
