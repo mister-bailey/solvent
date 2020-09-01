@@ -100,7 +100,7 @@ class MysqlDB():
         con.close()
         return [(r[0], inflate(r[1]), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)]
 
-    def read_range(self, start_row, stop_row, check_status=True, randomize=True):
+    def read_range(self, start_row, stop_row, check_status=True, randomize=True, limit=None):
         """
         Returns list of tuples (id, data, weights, smiles).
         """
@@ -110,6 +110,8 @@ class MysqlDB():
             command = f"select id, data, weights, gdb_id from data where id >= {start_row} and id < {stop_row}"
             if check_status:
                 command += " and status = 1 and weights is not null"
+            if isinstance(limit, int):
+                command += f" limit {limit}"
             result = cursor.execute(command)
             rows = cursor.fetchall()
 
@@ -314,6 +316,57 @@ class MysqlDB():
         con.close()
         return cols
 
+    def get_column_from_range(self, column, start, stop, limit=None, check_status=True):
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            command = f"select {column} from data where id >= {start} and id < {stop}"
+            if check_status:
+                command += " and status = 1 and weights is not null"
+            if isinstance(limit, int):
+                command += f" limit {limit}"
+            result = cursor.execute(command)
+            cols = [row[0] for row in cursor.fetchall()]
+
+        con.close()
+        return cols
+
+    def get_columns_with_cond(self, column, cond, limit=None, check_status=True):
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            command = f"select {column} from data where {cond}"
+            if check_status:
+                command += " and status = 1 and weights is not null"
+            if isinstance(limit, int):
+                command += f" limit {limit}"
+            result = cursor.execute(command)
+            cols = [row[0] for row in cursor.fetchall()]
+
+        con.close()
+        return cols
+
+
+
+
+    def get_raw_rows(self, limit):
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            command = f"select * from data limit {limit}"
+            result = cursor.execute(command)
+            cols = list(cursor.fetchall())
+
+        con.close()
+        return cols
+
+    def get_column_names(self):
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            result = cursor.execute("show columns from data")
+            cols = list(cursor.fetchall())
+
+        con.close()
+        return cols
+
+
 
 
 
@@ -321,5 +374,8 @@ if __name__ == '__main__':
     # Test
     db = MysqlDB("local_mysql.yaml", None, None)
     print(f"Connected to {db.connect_params['db']}: {db.connect_params['user']}@{db.connect_params['host']}")
-    rs = db.read_range(0,20,check_status=False)
-    for r in rs: print(r) 
+    #rs = db.read_range(0,20,check_status=False)
+    #for r in rs: print(r) 
+    print(db.get_column_names())
+    rs = db.get_raw_rows(1)
+    print(rs[0])
