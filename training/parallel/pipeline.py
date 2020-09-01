@@ -57,7 +57,7 @@ class Molecule():
         for i, e in enumerate(all_elements):
             Molecule.one_hot_table[e][i] = 1.0
 
-    # generates one-hots for a list of atomic_symbols
+    # generates one-hots for a list of atomic_numbers
     @staticmethod
     def get_one_hots(atomic_numbers):
         return Molecule.one_hot_table[atomic_numbers]
@@ -131,7 +131,7 @@ class Pipeline():
         #self.manager = manager
         self.knows = Semaphore(0)  # > 0 if we know if any are coming
         # == 0 if DatasetReader is processing a command
-        self.working = Semaphore(1)
+        self.working = Semaphore(1 if new_process else 100)
         self.finished_reading = Lock()  # locked if we're still reading from file
         # number of molecules that have been sent to the pool
         self.in_pipe = Value('i', 0)
@@ -145,7 +145,7 @@ class Pipeline():
         #                                    (self, max_radius, Rs_in, Rs_out))
         self.testing_molecules_dict = manager.dict()
 
-        self.dataset_reader = DatasetReader("dataset_reader", self, config, self.testing_molecules_dict, new_process)
+        self.dataset_reader = DatasetReader("dataset_reader", self, config, self.testing_molecules_dict, new_process=new_process)
         if new_process:
             self.dataset_reader.start()
 
@@ -194,6 +194,7 @@ class Pipeline():
         self.command_queue.put(SetIndices(test_set_indices))
         self.working.acquire()
         self.command_queue.put(ScanTo(0))
+
 
     def any_coming(self):  # returns True if at least one example is coming
         wait_semaphore(self.knows)
@@ -315,9 +316,10 @@ class SetIndices(DatasetSignal):
 
 class DatasetReader(Process):
     def __init__(self, name, pipeline, config,
-                 testing_molecules_dict, shuffle_incoming=True, new_process=True, requested_jiggles=1):
+                 testing_molecules_dict, shuffle_incoming=False, new_process=True, requested_jiggles=1):
         if new_process:
             super().__init__(group=None, target=None, name=name)
+        self.new_process = new_process
         self.pipeline = pipeline
         self.config = config
 
@@ -361,7 +363,7 @@ class DatasetReader(Process):
             self.indices = np.array([])
         if len(Molecule.one_hot_table) == 0:
             Molecule.initialize_one_hot_table(self.all_elements)
-
+        
         while True:
             command = self.pipeline.get_command()
             #print(f"Command: {command}")
@@ -389,6 +391,8 @@ class DatasetReader(Process):
             else:
                 raise ValueError("unexpected work type")
             self.pipeline.working.release()
+            if not self.new_process:
+                break
 
     # iterate through hdf5 filenames, picking up where we left off
     # returns: number of examples processed
@@ -492,7 +496,7 @@ def generate_multi_jiggles_set(n_molecules, n_jiggles, connect_params, randomize
                                get_from_start=False, rng=None, seed=None):
     from mysql_df import MysqlDB
     db = MysqlDB(connect_params)
-    
+
     indices = db.get_columns_with_cond('id', f'mod(id, 1000) < {n_jiggles}', n_molecules * n_jiggles)
     assert len(indices) == n_molecules * n_jiggles, "Couldn't get requested number of jiggles!"
 
