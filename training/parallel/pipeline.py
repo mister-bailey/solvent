@@ -479,12 +479,31 @@ def generate_index_shuffle(size, connect_params, rng=None, seed=None, randomize=
     from mysql_df import MysqlDB
     db = MysqlDB(connect_params)
     indices = np.array(db.get_finished_idxs(size, ordered=get_from_start), dtype=np.int32)
-    if rng is None:
-        rng = np.random.default_rng(seed)
-    if not randomize:
-        return np.sort(indices)
-    rng.shuffle(indices)
+    if randomize:
+        if rng is None:
+            rng = np.random.default_rng(seed)
+        rng.shuffle(indices)
+    else:
+        indices = np.sort(indices)
     return indices
+
+# allow ordering within jiggle group??
+def generate_multi_jiggles_set(n_molecules, n_jiggles, connect_params, randomize=True,
+                               get_from_start=False, rng=None, seed=None):
+    from mysql_df import MysqlDB
+    db = MysqlDB(connect_params)
+    smiles = db.get_distinct_columns('gdb_id', n_molecules, check_status=True)
+    indices = np.concatenate([np.array(db.get_columns_from_column(
+                'id', 'gdb_id', s, n_jiggles, check_status=True)) for s in smiles])
+    if randomize:
+        if rng is None:
+            rng = np.random.default_rng(seed)
+        rng.shuffle(indices)
+    else:
+        indices = np.sort(indices)
+    return indices
+
+
 
 # method that takes Molecules from a queue (molecule_queue) and places
 # DataNeighbors into another queue (data_neighbors_queue)

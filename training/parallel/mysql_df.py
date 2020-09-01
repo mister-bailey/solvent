@@ -273,6 +273,50 @@ class MysqlDB():
         con.close()
         return idxs
 
+    def get_distinct_columns(self, column, limit=None, check_status=False):
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            command = f"select distinct {column} from data"
+            if check_status:
+                command += "where status = 1 and weights is not null"
+            if isinstance(limit, int):
+                command += f" limit {limit}"
+            result = cursor.execute(command)
+            cols = [row[0] for row in cursor.fetchall()]
+        con.close()
+        return cols
+
+    def get_rows_from_column(self, column, value, limit=None, check_status=False):
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            command = f"select id, data, weights, gdb_id from data where {column} = \"{value}\""
+            if check_status:
+                command += " and status = 1 and weights is not null"
+            if isinstance(limit, int):
+                command += f" limit {limit}"
+            result = cursor.execute(command)
+            rows = cursor.fetchall()
+
+        con.close()
+        return [(r[0], inflate(r[1]), inflate(r[2]), r[3]) for r in rows]
+    
+    def get_columns_from_column(self, get_column, where_column, value, limit=None, check_status=False):
+        con = pymysql.connect(**self.connect_params)
+        with con.cursor() as cursor:
+            command = f"select {get_column} from data where {where_column} = \"{value}\""
+            if check_status:
+                command += " and status = 1 and weights is not null"
+            if isinstance(limit, int):
+                command += f" limit {limit}"
+            result = cursor.execute(command)
+            cols = [row[0] for row in cursor.fetchall()]
+
+        con.close()
+        return cols
+
+
+
+
 if __name__ == '__main__':
     # Test
     db = MysqlDB("local_mysql.yaml", None, None)
