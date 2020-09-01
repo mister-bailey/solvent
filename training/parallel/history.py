@@ -2,7 +2,6 @@ from stopwatch import Stopwatch
 from collections import deque
 import numpy as np
 import torch
-from datetime import timedelta
 import matplotlib
 import matplotlib.pyplot as plt
 import math
@@ -13,19 +12,28 @@ from training_config import Config
 
 
 class TrainTestHistory:
-    def __init__(self, batches_per_epoch, checkpoint_prefix, testing_batches, relevant_elements,
+    def __init__(self, batches_per_epoch, save_prefix, testing_batches, relevant_elements,
                  molecule_dict, device, number_to_symbol=None, smoothing_window=10, store_residuals=False):
         self.train = TrainingHistory(batches_per_epoch, smoothing_window)
         self.test = TestingHistory(testing_batches, relevant_elements, molecule_dict, device,
                                   number_to_symbol=number_to_symbol, store_residuals=store_residuals)
-        self.checkpoint_prefix = checkpoint_prefix
+        self.save_prefix = save_prefix
     
     # save raw data
     def save(self):
-        history_filename = f"{self.checkpoint_prefix}-history.torch"
+        history_filename = f"{self.save_prefix}-history.torch"
         print("Saving train/test history... ", end="", flush=True)
         torch.save(self, history_filename)
         print("Done.", end="\r", flush=True)
+
+    @staticmethod
+    def load(testing_batches=[], file=None, prefix=None):
+        if file is None:
+            file = prefix + "-history.torch"
+        h = torch.load(file)
+        assert isinstance(h, TrainTestHistory), f"File {file} doesn't contain a train/test history!"
+        h.test.testing_batches = testing_batches
+        return h
 
     def plot(self, figure=None, x_axis='batch_number', y_axis='smoothed_loss'): # x_axis = 'time' is also allowed
         if figure is None:
@@ -44,6 +52,9 @@ class TrainTestHistory:
         if batch_in_epoch is None: batch_in_epoch = self.train.batch_in_epoch[-1]
         if elapsed_time is None: elapsed_time = self.train.elapsed_time[-1]
         self.test.run_test(model, batch_number, epoch, batch_in_epoch, elapsed_time, *args, **kwargs)
+
+    def elapsed_time(self):
+        return last(self.train.elapsed_time)
         
 
 
@@ -53,17 +64,25 @@ def last(seq, min=0):
         return min
     return seq[-1]
 
+# returns the first non-None argument
+# eg., user-specified value could be arg1, default could be arg2
+def alt(*args):
+    for arg in args:
+        if arg is not None:
+            return arg
+    return None
+
 def new_or_inc(seq, next, min=0, inc=1):
     if next is None:
         seq.append(last(seq, min) + inc)
     else:
         seq.append(next)
 
-def new_or_old(seq, next, min=0):
-    if next is None:
-        seq.append(last(seq, min))
-    else:
-        seq.append(next)
+#def new_or_old(seq, next, min=0):
+#    if next is None:
+#        seq.append(last(seq, min))
+#    else:
+#        seq.append(next)
 
 
 class TrainingHistory:
@@ -77,6 +96,8 @@ class TrainingHistory:
         self.batch_in_epoch=[]
         self.elapsed_time=[]
 
+        self.epoch_start=[-1] # includes a dummy epoch 0 starting at batch -1
+
         self.molecules_per_batch=[]
         self.atoms_per_batch=[]
 
@@ -89,14 +110,12 @@ class TrainingHistory:
 
         # if you don't provide batch numbers or epoch numbers, we will make reasonable assumptions:
         new_or_inc(self.batch_number, batch_number, min=0)
-        if batch_in_epoch is None:
-            if epoch != last(self.epoch):
-                batch_in_epoch = 1
-            else:
-                batch_in_epoch = last(self.batch_in_epoch) + 1
+        epoch = epoch if epoch is not None else self.current_epoch()
+        if epoch != self.latest_epoch():
+            self.epoch_start.append(len(self.batch_number))
+        batch_in_epoch = batch_in_epoch if batch_in_epoch is not None else self.next_batch_in_epoch()
         self.batch_in_epoch.append(batch_in_epoch)
-        new_or_old(self.epoch, epoch, min=1)
-
+        self.epoch.append(epoch)
 
         self.elapsed_time.append(last(self.elapsed_time) + batch_time)
         self.molecules_per_batch.append(molecules_per_batch)
@@ -109,6 +128,54 @@ class TrainingHistory:
             print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batches_per_epoch}  train_loss = {self.smoothed_loss[-1]:10.3f}"
                   f"  t_train = {batch_time:.2f} s  t_wait = {wait_time:.2f} s  t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
                    end="\r", flush=True)
+
+    def num_batches(self):
+        return len(self.batch_number)
+
+    # number of epochs we have seen, inclusive
+    def num_epochs(self):
+        return len(self.epoch_start) + 1
+
+    # epoch of the last batch
+    def latest_epoch(self):
+        """
+        epoch of the last batch
+        """
+        return last(self.epoch)
+
+    # epoch of the next incoming batch
+    def current_epoch(self):
+        """
+        epoch of the next incoming batch
+        """
+        if len(self.batch_in_epoch) == 0:
+            return 1
+        if self.batch_in_epoch[-1] >= self.batches_per_epoch:
+            return self.epoch[-1] + 1
+        return self.epoch[-1]
+
+    def next_batch_in_epoch(self, epoch=None):
+        """
+        number in epoch of next incoming batch
+        optional parameter epoch is compared with latest epoch, and resets to batch 1
+        if we've moved to a new epoch
+        otherwise, assumes we will start a new epoch when we reach self.batches_per_epoch
+        """
+        if epoch is None:
+            epoch = self.current_epoch()
+        last_batch = last(self.batch_in_epoch)
+        return last_batch + 1 if epoch==self.latest_epoch() else 1
+
+
+    def example_in_epoch(self, index=-1):
+        """
+        tells you which example we have reached in the epoch after the specified index
+        default is most recent entry
+        useful for resuming after loading
+        """
+        epoch = self.epoch[index]
+        start = self.epoch_start[epoch]
+        return sum(self.molecules_per_batch[start:index+1])
         
     # x_axis = 'time' and y_axis = 'loss' are also allowed
     def plot(self, figure=None, x_axis='batch_number', y_axis='smoothed_loss'):
@@ -183,7 +250,10 @@ class TestingHistory():
                 residual_chunks.append(chunk)
 
         if verbose: print("Collating batch results...", end="\r", flush=True)
-        loss = (torch.dot(torch.tensor(losses), self.batch_weights) / self.total_weight).sqrt()
+        # Using average loss over batches, rather than weighted average, to better mirror
+        # running average of testing loss:
+        #loss = (torch.dot(torch.tensor(losses), self.batch_weights) / self.total_weight).sqrt()
+        loss = torch.tensor(losses).sqrt().mean()
         residuals = torch.cat(residual_chunks)
 
         if verbose: print("Calculating stats by element...", end="\r", flush=True)
@@ -199,16 +269,16 @@ class TestingHistory():
         if verbose:
             print(f"  Test loss = {loss:6.3f}   Test time = {test_time:.2f}")
             print(f"  Element   Mean Error    RMSE")
-            #print(f" <5> Ee <6>  012.345 <5> 012.345")
+            #print(f"<4> Ee  <7>  012.345 <5> 012.345")
             for e in self.relevant_elements:
-                print(f"     {self.number_to_symbol[e].rjust(2)}      {mean_error_by_element[e]:3.3f}     {RMSE_by_element[e]:3.3f}")
+                print(f"    {self.number_to_symbol[e].rjust(2)}       {mean_error_by_element[e]:3.3f}     {RMSE_by_element[e]:3.3f}")
 
         if log:
             self.log_test(batch_number, epoch, batch_in_epoch, elapsed_time,
                     loss, mean_error_by_element, RMSE_by_element, residuals_by_element)
 
     def log_test(self, batch_number, epoch, batch_in_epoch, elapsed_time,
-            loss, mean_error_by_element, RMSE_by_element, residuals_by_element):
+            loss, mean_error_by_element, RMSE_by_element, residuals_by_element=None):
         self.batch_number.append(batch_number)
         self.epoch.append(epoch)
         self.batch_in_epoch.append(batch_in_epoch)
@@ -219,12 +289,17 @@ class TestingHistory():
         if self.store_residuals:
             self.residuals_by_element = residuals_by_element
 
+    def __getstate__(self):
+        d = self.__dict__.copy()
+        del d['testing_batches']
+        return d
+
 
 
         
 
 
-
+# this function is deprecated. I include it only for reference.
 
 def compute_testing_loss(model, testing_batches, device, relevant_elements, training_history,
                         molecules_dict, epoch, minibatches_seen):

@@ -16,6 +16,11 @@ def parse_list(s, separator=",", func=lambda x : x):
 
 title_case = lambda s : s.title()
 
+def str_to_secs(s):
+    t_strings = s.split(":")
+    assert len(t_strings) <= 3, f"Time string '{s}' has too many terms!"
+    return sum(eval(n) * 60 ** i for i,n in enumerate(reversed(t_strings)))
+
 class NO_STORE:
     def __init__(self):
         return
@@ -97,7 +102,6 @@ class ConfigSection:
         return ((key, value) for (key, value) in self.__dict__.items()
             if (not key.startswith('_')) and key not in {'load_all', 'load', 'items'}) 
 
-
 class Config:
     def atomic_number(self, e):
         if isinstance(e, str):
@@ -130,12 +134,12 @@ class Config:
     def items(self):
         return ((key, value) for (key, value) in self.__dict__.items()
             if (not key.startswith('_')) and key not in
-            {'atomic_number', 'load_section', 'load_section_into_base', 'items'}) 
+            {'atomic_number', 'load_section', 'load_section_into_base', 'items'})
 
     # parses config files
     # later filenames overwrite values from earlier filenames
     # (so you can have mini configs that change just a few settings)
-    def __init__(self, *filenames, _set_names=False):
+    def __init__(self, *filenames, settings=None, _set_names=False):
         if _set_names: # Only here to satisfy pylint and the code highlighter
             self._set_names()
         self._parser = configparser.ConfigParser()
@@ -144,8 +148,16 @@ class Config:
             filenames = ["training.ini"]
             if len(sys.argv) > 1:
                 filenames += sys.argv[1:]
+
+        #print(f"Loading config from files {filenames}...")
                 
-        self._parser.read(filenames)
+        files_worked = self._parser.read(filenames)
+
+        print(f"Loaded config from files {files_worked}.")
+
+        # load in extra caller-provided settings:
+        if isinstance(settings, Mapping):
+            self._parser.read_dict(settings)
 
         # dictionaries between symbols and numbers
         self.load_section('symbols_numbers_dict', key_func=title_case, eval_func=int)
@@ -168,7 +180,8 @@ class Config:
         assert len(self.relevant_elements) == len(set(self.relevant_elements)), "duplicate element"
         
         # see reference training.ini for all the parameters in 'data'
-        self.load_section('data', eval_func=eval, eval_funcs={'hdf5_filenames':glob}, eval_error=False)
+        self.load_section('data', eval_func=eval, eval_funcs={'hdf5_filenames':glob},
+                          defaults={'randomize':True, 'get_from_start':False}, eval_error=False)
         # where the raw data are stored
         if self.data.source.startswith('hdf5'):
             if self.data.source == 'hdf5_0':
@@ -182,9 +195,8 @@ class Config:
             self.data.SQL_fetch_size = self.data.sql_fetch_size
 
         # model parameters
-        self.load_section('model', defaults={'model_file':None}, eval_func=eval, eval_error=False)
+        self.load_section('model', eval_func=eval, eval_error=False)
         self.model.kwargs = self.model._mapping
-        del self.model.kwargs['model_file']
         self.model.Rs_in = [ (self.n_elements, 0, 1) ]  # n_features, rank 0 tensor, even parity
         self.model.Rs_out = [ (1,0,1) ]            # one output per atom, rank 0 tensor, even parity
         self.model.kwargs['Rs_in'] = self.model.Rs_in
@@ -192,11 +204,12 @@ class Config:
         self.max_radius = self.model.max_radius
 
         # training parameters
-        self.load_section('training', eval_func=eval, eval_funcs={'checkpoint_prefix':str})
+        self.load_section('training', eval_func=eval, eval_funcs={'save_prefix':str, 'time_limit':str_to_secs},
+                defaults={'save_prefix':None, 'resume':False, 'n_epochs':None, 'time_limit':None})
 
 
-    # the only purpose of this section is to get rid of the red squiggly lines from
-    # not "defining" parameters explicitly in this file
+    # The only purpose of this section is to get rid of the red squiggly lines from
+    # not "defining" parameters explicitly in this file. This function is not actually called.
     def _set_names(self):
         self.device = ""
         self.all_elements = []
@@ -212,13 +225,15 @@ class Config:
         self.data.testing_size = 0
         self.data.training_size = 0
         self.data.test_train_shuffle = ""
+        self.data.randomize = True
+        self.data.get_from_start = False
 
         self.data.n_molecule_processors = 0
         self.data.molecule_queue_cap = 0
         self.data.example_queue_cap = 0
         self.data.batch_queue_cap = 0
 
-        self.data.SQL_fetch_size = 0
+        self.data.sql_fetch_size = 0
         self.data.connect_params = {}
 
         self.connect_params = SECTION()
@@ -228,19 +243,20 @@ class Config:
         self.connect_params.db = ""
 
         self.model = SECTION()
-        self.model.model_file = ""
         self.model.kwargs = {}
         self.model.max_radius = 0
         self.model.Rs_in = [ (0,0,0) ]   # n_features, rank 0 tensor, even parity
         self.model.Rs_out = [ (0,0,0) ]  # one output per atom, rank 0 tensor, even parity
 
         self.training = SECTION()
-        self.training.n_epochs = 0             # number of epochs
+        self.training.n_epochs = None             # number of epochs
+        self.training.time_limit = None
         self.training.batch_size = 0           # minibatch sizes
         self.training.testing_interval = 0     # compute testing loss every n minibatches
-        self.training.checkpoint_interval = 0  # save model every n minibatches
-        self.training.checkpoint_prefix = ""   # save checkpoints to files starting with this
+        self.training.save_interval = 0  # save model every n minibatches
+        self.training.save_prefix = ""   # save checkpoints to files starting with this
         self.training.learning_rate = 0        # learning rate
+        self.training.resume = False
 
 
 

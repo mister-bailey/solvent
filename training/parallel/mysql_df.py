@@ -252,10 +252,15 @@ class MysqlDB():
         con.commit()
         con.close()
 
-    def get_finished_idxs(self, limit=None, block_size=1e4):
+    def get_finished_idxs(self, limit=None, ordered=False, block_size=1e4):
         con = pymysql.connect(**self.connect_params)
         with con.cursor() as cursor:
-            result = cursor.execute(f"select id from data where status = 1 and weights is not null limit {limit}")
+            command = "select id from data where status = 1 and weights is not null"
+            if ordered:
+                command += " order by id asc"
+            if isinstance(limit, int):
+                command += f" limit {limit}"
+            result = cursor.execute(command)
             idxs = [x[0] for x in cursor.fetchall()]
         con.close()
         return idxs

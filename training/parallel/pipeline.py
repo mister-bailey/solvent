@@ -179,21 +179,21 @@ class Pipeline():
                 ip = self.in_pipe.value
             raise Exception(f"Waiting with {ip} examples in pipe!")
 
-    def restart(self):
+    def scan_to(self, index):
         assert check_semaphore(
-            self.knows), "Tried to restart, but don't know if finished!"
+            self.knows), "Tried to scan to index, but don't know if finished!"
         assert check_semaphore(
-            self.finished_reading), "Tried to restart, but not finished reading!"
-        assert not self.any_coming(), "Tried to restart pipeline before it was empty!"
+            self.finished_reading), "Tried to scan to index, but not finished reading!"
+        assert not self.any_coming(), "Tried to scan to index, but pipeline not empty!"
         self.working.acquire()
-        self.command_queue.put(RestartSignal())
+        self.command_queue.put(ScanTo(index))
         # What to do if things are still in the pipe???
 
     def set_indices(self, test_set_indices):
         self.working.acquire()
         self.command_queue.put(SetIndices(test_set_indices))
         self.working.acquire()
-        self.command_queue.put(RestartSignal())
+        self.command_queue.put(ScanTo(0))
 
     def any_coming(self):  # returns True if at least one example is coming
         wait_semaphore(self.knows)
@@ -269,9 +269,12 @@ class DatasetSignal():
         return "DatasetSignal"
 
 
-class RestartSignal(DatasetSignal):
+class ScanTo(DatasetSignal):
+    def __init__(self, index=0):
+        self.index=0
+
     def __str__(self):
-        return "RestartSignal"
+        return f"ScanTo({self.index})"
 
 
 class StartReading(DatasetSignal):
@@ -362,12 +365,19 @@ class DatasetReader(Process):
         while True:
             command = self.pipeline.get_command()
             #print(f"Command: {command}")
-            if isinstance(command, RestartSignal):
-                self.hdf5_file_list_index = 0
-                self.hdf5_file_index = 0
-                self.index_pos = 0
+            if isinstance(command, ScanTo):
+                # move the reader head to command.index
+                if self.data_source == 'hdf5':
+                    self.hdf5_file_list_index = 0
+                    self.hdf5_file_index = 0
+                    # hdf5 can only scan by reading through the files
+                    if command.index > 0:
+                        self.read_examples(command.index, False, False)
+                        self.pipeline.set_finished_reading()
+                elif self.data_source == 'SQL':
+                    self.index_pos = command.index
+                    self.molecule_buffer = []
                 #self.molecule_number = 0
-                self.molecule_buffer = []
             elif isinstance(command, StartReading):
                 self.molecule_pipeline.notify_starting(command.batch_size)
                 self.read_examples(command.examples_to_read, command.make_molecules, command.record_in_dict)
@@ -465,12 +475,14 @@ class DatasetReader(Process):
 
 
 # returns a random shuffle of the available indices, for test/train split and random training
-def generate_index_shuffle(size, connect_params, rng=None, seed=None):
+def generate_index_shuffle(size, connect_params, rng=None, seed=None, randomize=True, get_from_start=False):
     from mysql_df import MysqlDB
     db = MysqlDB(connect_params)
-    indices = np.array(db.get_finished_idxs(size), dtype=np.int32)
+    indices = np.array(db.get_finished_idxs(size, ordered=get_from_start), dtype=np.int32)
     if rng is None:
         rng = np.random.default_rng(seed)
+    if not randomize:
+        return np.sort(indices)
     rng.shuffle(indices)
     return indices
 

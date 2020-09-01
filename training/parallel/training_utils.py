@@ -2,6 +2,7 @@ from enum import Enum
 import re
 import math
 import os
+from glob import glob
 import time
 import numpy as np
 import h5py
@@ -37,10 +38,15 @@ def save_checkpoint(model_kwargs, model, filename, optimizer, all_elements):
         'all_elements' : all_elements,
     }
     print("                                                                                                      ", end="\r", flush=True)
-    print(f"Checkpointing to {filename}... ", end='')
+    print(f"Saving model to {filename}... ", end='')
     torch.save(model_dict, filename)
     file_size = os.path.getsize(filename) / 1E6
     print(f"occupies {file_size:.2f} MB.")
+
+# deletes all but the {number} newest checkpoints
+def cull_checkpoints(save_prefix, number):
+    for f in sorted(glob(save_prefix + "-*-checkpoint.torch"), key = os.path.getmtime)[:-number]:
+        os.remove(f)
 
 # mean-squared loss (not RMS!)
 def loss_function(output, data):
