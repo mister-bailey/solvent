@@ -207,7 +207,7 @@ def main():
     testing_molecules_dict = pipeline.testing_molecules_dict
 
     print("\n=== Preprocessing Testing Data ===\n")
-    print("Working...", end="\r", flush=True)
+    print("Setting test indices...")
     time1 = time.time()
     pipeline.set_indices(test_set_indices)
     pipeline.start_reading(testing_size, batch_size=1, record_in_dict=True)

@@ -51,17 +51,21 @@ PyObject* molecule_pipeline_ext_newBatchGeneratorElements(PyObject* self, PyObje
 
 PyDoc_STRVAR(molecule_pipeline_ext_getNextBatch_doc, "(positions, features, output, weights, edge_indices, edge_vecs, name, n_examples) = getNextBatch(batch_generator, block = True)");
 PyObject* molecule_pipeline_ext_getNextBatch(PyObject* self, PyObject* args, PyObject* kwargs) {
+	LINETRACK;
 	PyObject *bgc;
 	bool block = true;
 	static char* keywords[] = {"", "block", NULL };
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|p", keywords, &bgc, &block))
 		return NULL;
+	LINETRACK;
 
 	//printf("Getting batch from C++ generator...\n");
 
+	LINETRACK;
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(bgc, "BatchGenerator");
 	Example *e = bg->getBatch(block);
 	if(e == NULL) Py_RETURN_NONE;
+	LINETRACK;
 
 	//printf("Building NumPy arrays...\n");
 	//printf(" -- Feature size: %i bytes, %i floats\n", bg->feature_size, bg->feature_size / sizeof(ftype));
@@ -69,28 +73,38 @@ PyObject* molecule_pipeline_ext_getNextBatch(PyObject* self, PyObject* args, PyO
 	npy_intp pdim[2] = {e->num_atoms, 3};
 	PyArrayObject* positions = (PyArrayObject*)PyArray_SimpleNewFromData(2, pdim, NPY_FLOAT64, e->positions);
 	PyArray_ENABLEFLAGS(positions, NPY_OWNDATA);
+	LINETRACK;
 	npy_intp fdim[2] = {e->num_atoms, bg->feature_size / sizeof(ftype)};
 	PyArrayObject* features = (PyArrayObject*)PyArray_SimpleNewFromData(2, fdim, NPY_FLOAT64, e->features);
 	PyArray_ENABLEFLAGS(features, NPY_OWNDATA);
+	LINETRACK;
 	npy_intp odim[2] = {e->num_atoms, bg->output_size / sizeof(ftype)};
 	PyArrayObject* output = (PyArrayObject*)PyArray_SimpleNewFromData(2, odim, NPY_FLOAT64, e->output);
 	PyArray_ENABLEFLAGS(output, NPY_OWNDATA);
 	npy_intp wdim[1] = {e->num_atoms};
+	LINETRACK;
 	PyArrayObject* weights = (PyArrayObject*)PyArray_SimpleNewFromData(1, wdim, NPY_FLOAT64, e->weights);
 	PyArray_ENABLEFLAGS(weights, NPY_OWNDATA);
+	LINETRACK;
 
 	npy_intp eidim[2] = {e->num_edges, 2};
 	PyArrayObject* edge_indices = (PyArrayObject*)PyArray_SimpleNewFromData(2, eidim, NPY_INT64, e->edge_indices);
 	PyArray_ENABLEFLAGS(edge_indices, NPY_OWNDATA);
+	LINETRACK;
 	npy_intp evdim[2] = {e->num_edges, 3};
 	PyArrayObject* edge_vecs = (PyArrayObject*)PyArray_SimpleNewFromData(2, evdim, NPY_FLOAT64, e->edge_vecs);
 	PyArray_ENABLEFLAGS(edge_vecs, NPY_OWNDATA);
+	LINETRACK;
 
 	//printf("Returning batch from C++...\n");
 
+	LINETRACK;
 	PyObject *r = Py_BuildValue("NNNNNNii", positions, features, output, weights, edge_indices, edge_vecs, e->ID, e->n_examples);
+	LINETRACK;
 	e->releaseBuffers();
+	LINETRACK;
 	delete e;
+	LINETRACK;
 	return r;
 }
 

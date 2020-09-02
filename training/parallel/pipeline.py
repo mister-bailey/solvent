@@ -467,7 +467,8 @@ class DatasetReader(Process):
                         self.testing_molecules_dict[molecule.ID] = molecule
                 examples_read += 1
                 while self.pipeline.ext_batch_ready():
-                    self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
+                    bad_call = self.pipeline.get_batch_from_ext()
+                    self.pipeline.put_batch(bad_call)
             if len(self.molecule_buffer) < self.SQL_fetch_size:
                 self.molecule_buffer += self.database.read_rows(np.nditer(
                     self.indices[self.index_pos : self.index_pos + self.SQL_fetch_size]),
