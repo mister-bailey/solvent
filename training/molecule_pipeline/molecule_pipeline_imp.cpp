@@ -162,17 +162,17 @@ Example *BatchGenerator::makeBatch() {
     int ID = examples[0]->ID;
 
     vec3 *positions;
-    {MEMSAFE positions = (vec3 *)malloc(total_atoms * sizeof(vec3));}
+    {MEMSAFE positions = (vec3 *)ext_malloc(total_atoms * sizeof(vec3));}
     void *features;
-    {MEMSAFE features = malloc(total_atoms * feature_size);}
+    {MEMSAFE features = ext_malloc(total_atoms * feature_size);}
     void *output;
-    {MEMSAFE output = malloc(total_atoms * output_size);}
+    {MEMSAFE output = ext_malloc(total_atoms * output_size);}
     ftype *weights;
-    {MEMSAFE weights = (ftype *)malloc(total_atoms * sizeof(ftype));}
+    {MEMSAFE weights = (ftype *)ext_malloc(total_atoms * sizeof(ftype));}
     pair<itype,itype> *edge_indices;
-    {MEMSAFE edge_indices = (pair<itype,itype> *)malloc(total_edges * sizeof(pair<itype,itype>));}
+    {MEMSAFE edge_indices = (pair<itype,itype> *)ext_malloc(total_edges * sizeof(pair<itype,itype>));}
     vec3 *edge_vecs;
-    {MEMSAFE edge_vecs = (vec3 *)malloc(total_edges * sizeof(vec3));}
+    {MEMSAFE edge_vecs = (vec3 *)ext_malloc(total_edges * sizeof(vec3));}
 
     int atom_tally = 0;
     int edge_tally = 0;

@@ -191,7 +191,7 @@ class Pipeline():
 
     def set_indices(self, test_set_indices):
         self.working.acquire()
-        self.command_queue.put(SetIndices(test_set_indices))
+        self.command_queue.put(SetIndices(torch.tensor(test_set_indices)))
         self.working.acquire()
         self.command_queue.put(ScanTo(0))
 
@@ -354,8 +354,7 @@ class DatasetReader(Process):
             from mysql_df import MysqlDB
             self.database = MysqlDB(self.connect_params)
 
-
-    # process the data in all hdf5 files
+    # command loop for reader:
     def run(self):
         if self.molecule_pipeline is None:
             self.molecule_pipeline = MoleculePipeline(*self.molecule_pipeline_args)
@@ -497,7 +496,7 @@ def generate_multi_jiggles_set(n_molecules, n_jiggles, connect_params, randomize
     from mysql_df import MysqlDB
     db = MysqlDB(connect_params)
 
-    indices = db.get_columns_with_cond('id', f'mod(id, 1000) < {n_jiggles}', n_molecules * n_jiggles)
+    indices = np.array(db.get_columns_with_cond('id', f'mod(id, 1000) < {n_jiggles}', n_molecules * n_jiggles))
     assert len(indices) == n_molecules * n_jiggles, "Couldn't get requested number of jiggles!"
 
     if randomize:
@@ -505,7 +504,7 @@ def generate_multi_jiggles_set(n_molecules, n_jiggles, connect_params, randomize
             rng = np.random.default_rng(seed)
         rng.shuffle(indices)
     else:
-        indices = np.sort(indices)
+        indices.sort()
     return indices
 
 
