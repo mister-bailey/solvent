@@ -20,6 +20,8 @@ Copyright Michael Bailey 2020
 #include <set>
 
 #define MEMSAFE lock_guard<mutex> lg(alloc_mutex); //if(this->end) return;
+#define ext_malloc(x) PyArray_malloc(x)
+#define ext_free(x) PyArray_free(X)
 
 #define ftype double //NPY_FLOAT64
 #define itype int64_t
