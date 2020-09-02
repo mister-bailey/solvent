@@ -24,7 +24,7 @@ Copyright Michael Bailey 2020
 #define ext_free(x) PyArray_free(X)
 
 // Puts in ivisible file/line outpus
-#define LINETRACK printf("Execution stopping on Line %d in %s\r", __LINE__, __FILE___)
+#define LINETRACK printf("Execution stopping on Line %d in %s\r", __LINE__, __FILE__)
 
 #define ftype double //NPY_FLOAT64
 #define itype int64_t
