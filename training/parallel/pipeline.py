@@ -469,7 +469,7 @@ class DatasetReader(Process):
                 while self.pipeline.ext_batch_ready():
                     bad_call = self.pipeline.get_batch_from_ext()
                     self.pipeline.put_batch(bad_call)
-            if len(self.molecule_buffer) < self.SQL_fetch_size:
+            if len(self.molecule_buffer) < self.SQL_fetch_size and self.index_pos < len(self.indices):
                 self.molecule_buffer += self.database.read_rows(np.nditer(
                     self.indices[self.index_pos : self.index_pos + self.SQL_fetch_size]),
                     randomize = self.shuffle_incoming)

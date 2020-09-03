@@ -261,6 +261,7 @@ class Config:
         self.training.save_prefix = ""   # save checkpoints to files starting with this
         self.training.learning_rate = 0        # learning rate
         self.training.resume = False
+        self.training.num_checkpoints
 
 
 
