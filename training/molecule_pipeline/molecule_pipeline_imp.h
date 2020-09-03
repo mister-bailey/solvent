@@ -18,14 +18,14 @@ Copyright Michael Bailey 2020
 #include <stdint.h>
 #include <map>
 #include <set>
-#include <stdio>
+#include <stdio.h>
 
 #define MEMSAFE lock_guard<mutex> lg(alloc_mutex); //if(this->end) return;
 #define ext_malloc(x) PyArray_malloc(x)
 #define ext_free(x) PyArray_free(X)
 
 // Puts in ivisible file/line outpus
-#define LINETRACK printf(stderr, "Execution stopping on Line %d in %s\r", __LINE__, __FILE__)
+#define LINETRACK fprintf(stderr, "Execution stopping on Line %d in %s\n", __LINE__, __FILE__)
 
 #define ftype double //NPY_FLOAT64
 #define itype int64_t
