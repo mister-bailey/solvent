@@ -455,13 +455,14 @@ class DatasetReader(Process):
     def read_examples_from_SQL(self, examples_to_read, make_molecules, record_in_dict):
         examples_read = 0
         while examples_read < examples_to_read:
+            i=0
             for i, (ID, data, weights, smiles) in enumerate(self.molecule_buffer):
                 if make_molecules:
                     if examples_read == examples_to_read:
-                        self.molecule_buffer = self.molecule_buffer[i:]
                         break
                     molecule = Molecule(ID, str(smiles), data[:, 1:4], data[:, 4],
                                         data[:, 0].astype(np.int32), weights=weights)
+                    #print(f"# ID: {molecule.ID}")
                     self.pipeline.put_molecule_to_ext(molecule)
                     if record_in_dict:
                         self.testing_molecules_dict[molecule.ID] = molecule
@@ -469,6 +470,7 @@ class DatasetReader(Process):
                 while self.pipeline.ext_batch_ready():
                     bad_call = self.pipeline.get_batch_from_ext()
                     self.pipeline.put_batch(bad_call)
+            self.molecule_buffer = self.molecule_buffer[i:]
             if len(self.molecule_buffer) < self.SQL_fetch_size and self.index_pos < len(self.indices):
                 self.molecule_buffer += self.database.read_rows(np.nditer(
                     self.indices[self.index_pos : self.index_pos + self.SQL_fetch_size]),
