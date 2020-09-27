@@ -9,13 +9,6 @@ Python bindings for molecule_pipeline_ext
 #include <string>
 #include "molecule_pipeline_imp.h"
 
-#ifdef __linux__
-// God damn it
-// This is an awful hack, since somehow the capsule pointers were getting corrupted on some linux instances
-// So obviously you can only have 1 BatchGenerator at a time on linux
-BatchGenerator *g_bg;
-#endif
-
 
 void delete_BatchGenerator(PyObject* capsule) {
 	delete (BatchGenerator*)PyCapsule_GetPointer(capsule, "BatchGenerator");
@@ -32,10 +25,6 @@ PyObject* molecule_pipeline_ext_newBatchGenerator(PyObject* self, PyObject* args
 
 	BatchGenerator *bg = new BatchGenerator(batch_size, max_radius, feature_size * sizeof(ftype), output_size * sizeof(ftype), num_threads, molecule_cap, example_cap, batch_cap);
 
-	#ifdef __linux__
-	g_bg = bg;
-	#endif
-	
 	return (PyObject *) PyCapsule_New(bg, "BatchGenerator", (PyCapsule_Destructor)delete_BatchGenerator);
 }
 
@@ -49,6 +38,13 @@ PyObject* molecule_pipeline_ext_newBatchGeneratorElements(PyObject* self, PyObje
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ifOOiiii|p", keywords, &batch_size, &max_radius, &elements, &relevant_elements, &num_threads, &molecule_cap, &example_cap, &batch_cap))
 		return NULL;
 
+	/*
+	printf("newBatchGeneratorElements:\n");
+	printf(" batch_size = %d\n", batch_size);
+	printf(" max_radius = %f\n", max_radius);
+	printf(" num_threads = %d\n", num_threads);
+	*/
+
 	elements = (PyArrayObject *)PyArray_FROM_OT((PyObject *)elements, NPY_INT64);
 	vector<int> elements_vec;
 	for(int i=0; i < PyArray_DIM(elements,0); i++) elements_vec.push_back(*((itype *)PyArray_GETPTR1(elements, i)));
@@ -61,10 +57,6 @@ PyObject* molecule_pipeline_ext_newBatchGeneratorElements(PyObject* self, PyObje
 
 	BatchGenerator *bg = new BatchGenerator(batch_size, max_radius, elements_vec, relevant_elements_vec, num_threads, molecule_cap, example_cap, batch_cap);
 	
-	#ifdef __linux__
-	g_bg = bg;
-	#endif
-
 	return PyCapsule_New(bg, "BatchGenerator", (PyCapsule_Destructor)delete_BatchGenerator);
 }
 
@@ -72,16 +64,12 @@ PyObject* molecule_pipeline_ext_newBatchGeneratorElements(PyObject* self, PyObje
 PyDoc_STRVAR(molecule_pipeline_ext_getNextBatch_doc, "(positions, features, output, weights, edge_indices, edge_vecs, name, n_examples) = getNextBatch(batch_generator, block = True)");
 PyObject* molecule_pipeline_ext_getNextBatch(PyObject* self, PyObject* args, PyObject* kwargs) {
 	PyObject* capsule;
-	bool block = true;
+	int block = true;
 	static char* keywords[] = {"", "block", NULL };
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|p", keywords, &capsule, &block))
 		return NULL;
 
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 
 	Example *e = bg->getBatch(block);
 	if(e == NULL) Py_RETURN_NONE;
@@ -128,73 +116,43 @@ PyObject* molecule_pipeline_ext_getNextBatch(PyObject* self, PyObject* args, PyO
 
 PyDoc_STRVAR(molecule_pipeline_ext_batchReady_doc, "batchReady(batch_generator)");
 PyObject* molecule_pipeline_ext_batchReady(PyObject* self, PyObject* capsule) {
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
-
-	PyObject *r = Py_BuildValue("O", bg->batchReady() ? Py_True : Py_False);
-	return r;
+	return Py_BuildValue("O", bg->batchReady() ? Py_True : Py_False);
 }
 
 PyDoc_STRVAR(molecule_pipeline_ext_anyBatchComing_doc, "anyBatchComing(batch_generator)");
 PyObject* molecule_pipeline_ext_anyBatchComing(PyObject* self, PyObject* capsule) {
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 	return Py_BuildValue("O", bg->anyBatchComing() ? Py_True : Py_False);
 }
 
 PyDoc_STRVAR(molecule_pipeline_ext_moleculeQueueSize_doc, "moleculeQueueSize(batch_generator)");
 PyObject* molecule_pipeline_ext_moleculeQueueSize(PyObject* self, PyObject* capsule) {
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 	return Py_BuildValue("i", bg->moleculeQueueSize());
 }
 
 PyDoc_STRVAR(molecule_pipeline_ext_exampleQueueSize_doc, "exampleQueueSize(batch_generator)");
 PyObject* molecule_pipeline_ext_exampleQueueSize(PyObject* self, PyObject* capsule) {
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 	return Py_BuildValue("i", bg->exampleQueueSize());
 }
 
 PyDoc_STRVAR(molecule_pipeline_ext_batchQueueSize_doc, "batchQueueSize(batch_generator)");
 PyObject* molecule_pipeline_ext_batchQueueSize(PyObject* self, PyObject* capsule) {
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 	return Py_BuildValue("i", bg->batchQueueSize());
 }
 
 PyDoc_STRVAR(molecule_pipeline_ext_numExample_doc, "numExample(batch_generator)");
 PyObject* molecule_pipeline_ext_numExample(PyObject* self, PyObject* capsule) {
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 	return Py_BuildValue("i", bg->numExample());
 }
 
 PyDoc_STRVAR(molecule_pipeline_ext_numBatch_doc, "numBatch(batch_generator)");
 PyObject* molecule_pipeline_ext_numBatch(PyObject* self, PyObject* capsule) {
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 	return Py_BuildValue("i", bg->numBatch());
 }
 
@@ -205,22 +163,14 @@ PyObject* molecule_pipeline_ext_notifyStarting(PyObject* self, PyObject* args, P
 	static char* keywords[] = { "", "batch_size", NULL };
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|i", keywords, &capsule, &batch_size))
 		return NULL;
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 	bg->notifyStarting(batch_size);
 	Py_RETURN_NONE;
 }
 
 PyDoc_STRVAR(molecule_pipeline_ext_notifyFinished_doc, "notifyFinished(batch_generator)");
 PyObject* molecule_pipeline_ext_notifyFinished(PyObject* self, PyObject* capsule) {
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 	bg->notifyFinished();
 	Py_RETURN_NONE;
 }
@@ -230,24 +180,18 @@ PyObject* molecule_pipeline_ext_putMolecule(PyObject* self, PyObject* args, PyOb
 	PyObject* capsule;
 	PyArrayObject *positions, *features, *output, *weights;
 	int ID=-1;
-	bool block = true;
+	int block = true;
 	
 	static char* keywords[] = { "", "positions", "features", "output", "weights", "ID", "block", NULL};
+	//static char* keywords[] = { "", "positions", "features", "output", "weights", "ID", NULL};
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|ip", keywords, &capsule, &positions, &features, &output, &weights, &ID, &block))
+	//if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|i", keywords, &capsule, &positions, &features, &output, &weights, &ID))
 		return NULL;
 
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 
 	//First flush the deletion queue, since we have the GIL
 	while(bg->deletion_queue.size() > 0) delete bg->deletion_queue.pop();
-
-	//printf("Putting molecule ");
-	//printf(name);
-	//printf("...\n");
 
 	positions = (PyArrayObject*)PyArray_FROM_OTF((PyObject*)positions, NPY_FLOAT64, NPY_ARRAY_IN_ARRAY);
 	features = (PyArrayObject*)PyArray_FROM_OTF((PyObject*)features, NPY_FLOAT64, NPY_ARRAY_IN_ARRAY);
@@ -276,16 +220,12 @@ PyObject* molecule_pipeline_ext_putMoleculeData(PyObject* self, PyObject* args, 
 	PyObject* capsule;
 	PyArrayObject* positions, *elements, *output, *weights;
 	int ID=-1;
-	bool block = true;
+	int block = true;
 
 	static char* keywords[] = { "", "positions", "elements", "output", "weights", "ID", "block", NULL};
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|ip", keywords, &capsule, &positions, &elements, &output, &weights, &ID, &block))
 		return NULL;
-	#ifdef __linux__
-	BatchGenerator *bg = g_bg;
-	#else
 	BatchGenerator *bg = (BatchGenerator*) PyCapsule_GetPointer(capsule, "BatchGenerator");
-	#endif
 
 	//First flush the deletion queue, since we have the GIL
 	while(bg->deletion_queue.size() > 0) delete bg->deletion_queue.pop();
