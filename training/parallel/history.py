@@ -12,18 +12,19 @@ from training_config import Config
 
 
 class TrainTestHistory:
-    def __init__(self, batches_per_epoch, save_prefix, testing_batches, relevant_elements,
+    def __init__(self, examples_per_epoch, save_prefix, testing_batches, relevant_elements,
                  molecule_dict, device, number_to_symbol=None, smoothing_window=10, store_residuals=False):
-        self.train = TrainingHistory(batches_per_epoch, smoothing_window)
+        self.train = TrainingHistory(examples_per_epoch, smoothing_window)
         self.test = TestingHistory(testing_batches, relevant_elements, molecule_dict, device,
                                   number_to_symbol=number_to_symbol, store_residuals=store_residuals)
         self.save_prefix = save_prefix
     
     # save raw data
-    def save(self):
-        history_filename = f"{self.save_prefix}-history.torch"
+    def save(self, file=None):
+        if file is None:
+            file = f"{self.save_prefix}-history.torch"
         print("Saving train/test history... ", end="", flush=True)
-        torch.save(self, history_filename)
+        torch.save(self, file)
         print("Done.", end="\r", flush=True)
 
     @staticmethod
@@ -47,22 +48,15 @@ class TrainTestHistory:
         self.train.log_batch(*args, **kwargs)
 
     def run_test(self, model, batch_number=None, epoch=None, batch_in_epoch=None, elapsed_time=None, *args, **kwargs):
-        if batch_number is None: batch_number = self.train.batch_number[-1]
+        if batch_number is None: batch_number = len(self.train.loss)
         if epoch is None: epoch = self.train.epoch[-1]
         if batch_in_epoch is None: batch_in_epoch = self.train.batch_in_epoch[-1]
         if elapsed_time is None: elapsed_time = self.train.elapsed_time[-1]
         self.test.run_test(model, batch_number, epoch, batch_in_epoch, elapsed_time, *args, **kwargs)
 
-    def elapsed_time(self):
-        return last(self.train.elapsed_time)
+    def elapsed_time(self, batch=-1):
+        return self.train.elapsed_time[batch]
         
-
-
-# some utility functions for incrementing from an empty list
-def last(seq, min=0):
-    if len(seq) == 0:
-        return min
-    return seq[-1]
 
 # returns the first non-None argument
 # eg., user-specified value could be arg1, default could be arg2
@@ -72,115 +66,108 @@ def alt(*args):
             return arg
     return None
 
-def new_or_inc(seq, next, min=0, inc=1):
-    if next is None:
-        seq.append(last(seq, min) + inc)
-    else:
-        seq.append(next)
-
-#def new_or_old(seq, next, min=0):
-#    if next is None:
-#        seq.append(last(seq, min))
-#    else:
-#        seq.append(next)
-
-
 class TrainingHistory:
-    def __init__(self, batches_per_epoch, smoothing_window=10):
-        self.batches_per_epoch = batches_per_epoch
+    def __init__(self, examples_per_epoch, smoothing_window=10):
+        self.examples_per_epoch = examples_per_epoch
         self.smoothing_window = smoothing_window
 
         # initialize the lists we will be accumulating
-        self.batch_number=[]
-        self.epoch=[]
-        self.batch_in_epoch=[]
-        self.elapsed_time=[]
+        # these lists correspond to each other
+        # one entry per batch
+        # batch 0 is a dummy batch
+        self.epoch=[0]
 
-        self.epoch_start=[-1] # includes a dummy epoch 0 starting at batch -1
+        # batch n covers example[example_number[n-1]:example_number[n]]
+        self.example_number=[examples_per_epoch]
 
-        self.molecules_per_batch=[]
-        self.atoms_per_batch=[]
+        self.batch_in_epoch=[0]
+        self.elapsed_time=[0]
 
-        self.loss=[]
-        self.smoothed_loss=[]
+        self.atoms_per_batch=[0]
 
-    def log_batch(self, batch_time, wait_time, molecules_per_batch, atoms_per_batch, loss,
-                  batch_number=None, epoch=None, batch_in_epoch=None, verbose=True):
-        self.elapsed_time.append(last(self.elapsed_time) + batch_time)
+        self.loss=[None]
+        self.smoothed_loss=[None]
+
+        # this list has one entry per epoch
+        # epoch e starts at index epoch_start[e]
+        self.epoch_start=[0] # includes a dummy epoch 0 starting at batch 0
+
+
+
+    def log_batch(self, batch_time, wait_time, examples_per_batch, atoms_per_batch, loss,
+                  epoch=None, batch_in_epoch=None, verbose=True):
+        self.elapsed_time.append(self.elapsed_time[-1] + batch_time)
 
         # if you don't provide batch numbers or epoch numbers, we will make reasonable assumptions:
-        new_or_inc(self.batch_number, batch_number, min=0)
-        epoch = epoch if epoch is not None else self.current_epoch()
-        if epoch != self.latest_epoch():
-            self.epoch_start.append(len(self.batch_number))
-        batch_in_epoch = batch_in_epoch if batch_in_epoch is not None else self.next_batch_in_epoch()
-        self.batch_in_epoch.append(batch_in_epoch)
+        epoch = self.current_epoch() if epoch is None else epoch
+        if epoch > self.epoch[-1]:
+            self.epoch_start.append(len(self.epoch))
         self.epoch.append(epoch)
 
-        self.elapsed_time.append(last(self.elapsed_time) + batch_time)
-        self.molecules_per_batch.append(molecules_per_batch)
+        batch_in_epoch = self.next_batch_in_epoch() if batch_in_epoch is None else batch_in_epoch
+        self.batch_in_epoch.append(batch_in_epoch)
+
+        #print(f"example_in_epoch: {self.example_in_epoch()}  ", end='')
+        self.example_number.append(self.example_in_epoch() + examples_per_batch)
+
+        self.elapsed_time.append(self.elapsed_time[-1] + batch_time)
         self.atoms_per_batch.append(atoms_per_batch)
         self.loss.append(loss)
-        window = min(len(self.loss), self.smoothing_window)
+        window = min(len(self.loss)-1, self.smoothing_window)
         self.smoothed_loss.append(sum(self.loss[-window:]) / window)
+        #print(f"batches_remaining: {self.batches_remaining_in_epoch()}")
 
         if verbose:
-            print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batches_per_epoch}  train_loss = {self.smoothed_loss[-1]:10.3f}"
-                  f"  t_train = {batch_time:.2f} s  t_wait = {wait_time:.2f} s  t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
+            print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batch_in_epoch[-1] + self.batches_remaining_in_epoch()}"
+                  f"  train_loss = {self.smoothed_loss[-1]:10.3f}  t_train = {batch_time:.2f} s"
+                  f"  t_wait = {wait_time:.2f} s  t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
                    end="\r", flush=True)
 
+    def examples_in_batch(self, batch):
+        return self.example_number[batch] - self.example_in_epoch(batch-1)
+
     def num_batches(self):
-        return len(self.batch_number)
+        return len(self.epoch) - 1
 
-    # number of epochs we have seen, inclusive
+    # number of epochs we have seen
     def num_epochs(self):
-        return len(self.epoch_start) + 1
+        return len(self.epoch_start) - 1
 
-    # epoch of the last batch
-    def latest_epoch(self):
+    def ends_epoch(self, batch):
         """
-        epoch of the last batch
+        True iff batch is last in epoch
         """
-        return last(self.epoch)
+        return self.example_number[batch] >= self.examples_per_epoch
 
-    # epoch of the next incoming batch
-    def current_epoch(self):
+    def current_epoch(self, batch=-1):
         """
         epoch of the next incoming batch
         """
-        if len(self.batch_in_epoch) == 0:
-            return 1
-        if self.batch_in_epoch[-1] >= self.batches_per_epoch:
-            return self.epoch[-1] + 1
-        return self.epoch[-1]
+        return self.epoch[batch] if not self.ends_epoch(batch) else self.epoch[batch] + 1
 
-    def next_batch_in_epoch(self, epoch=None):
+    def next_batch_in_epoch(self, batch=-1):
         """
-        number in epoch of next incoming batch
-        optional parameter epoch is compared with latest epoch, and resets to batch 1
-        if we've moved to a new epoch
-        otherwise, assumes we will start a new epoch when we reach self.batches_per_epoch
+        batch number that would follow given batch
+        wraps around to 1 if epoch ends
         """
-        if epoch is None:
-            epoch = self.current_epoch()
-        last_batch = last(self.batch_in_epoch)
-        return last_batch + 1 if epoch==self.latest_epoch() else 1
+        return self.batch_in_epoch[batch] + 1 if not self.ends_epoch(batch) else 1
 
+    def batches_remaining_in_epoch(self, batch=-1):
+        return math.ceil((self.examples_per_epoch - self.example_number[batch]) / self.examples_in_batch(batch))
 
-    def example_in_epoch(self, index=-1):
+    def example_in_epoch(self, batch=-1):
         """
-        tells you which example we have reached in the epoch after the specified index
-        default is most recent entry
-        useful for resuming after loading
+        tells you which example number would start the following batch
         """
-        epoch = self.epoch[index]
-        start = self.epoch_start[epoch]
-        return sum(self.molecules_per_batch[start:index+1])
+        return self.example_number[batch] if not self.ends_epoch(batch) else 0
+
+    def total_examples(self, batch=-1):
+        return (self.epoch[batch] - 1) * self.examples_per_epoch + self.example_number[batch]
         
     # x_axis = 'time' and y_axis = 'loss' are also allowed
     def plot(self, figure=None, x_axis='batch_number', y_axis='smoothed_loss'):
-        x_axis = self.batch_number if x_axis=='batch number' else self.elapsed_time
-        y_axis = self.smoothed_loss if y_axis=='smoothed_loss' else self.loss
+        x_axis = range(1, len(self.loss)) if x_axis=='batch number' else self.elapsed_time[1:]
+        y_axis = self.smoothed_loss[1:] if y_axis=='smoothed_loss' else self.loss[1:]
         
         if figure is None:
             plt.figure(figsize=(12,8))
