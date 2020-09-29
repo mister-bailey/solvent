@@ -248,9 +248,13 @@ def main():
     if resume:
         try:
             history = TrainTestHistory.load(testing_batches, prefix=save_prefix)
-            start_example = history.train.example_in_epoch()
             start_epoch = history.train.current_epoch()
+            start_example = history.train.example_in_epoch()
             batch_in_epoch = history.train.next_batch_in_epoch()
+            print("Resuming from prior training...")
+            print(f"     start_epoch = {start_epoch}")
+            print(f"   start_example = {start_example}")
+            print(f"  batch_in_epoch = {batch_in_epoch}")
             partial_epoch = True
         except Exception as e:
             print(f"Failed to load history from {save_prefix + '-history.torch'}")
@@ -260,7 +264,7 @@ def main():
                 exit()
             resume = False
     if not resume:
-        history = TrainTestHistory(batches_per_epoch, save_prefix, testing_batches,
+        history = TrainTestHistory(training_size, save_prefix, testing_batches,
                                relevant_elements, testing_molecules_dict, device, config.number_to_symbol)
         partial_epoch = False
         start_epoch = 1
@@ -282,11 +286,11 @@ def main():
         print(("Resuming" if partial_epoch else "Starting") + f" epoch {epoch}...", end="\r", flush=True)
 
         # though we may start partway through an epoch, subsequent epochs start at example 0 and batch 1
-        if not partial_epoch:
+        if partial_epoch:
+            partial_epoch = False
+        else:
             start_example = 0
             batch_in_epoch = 1
-        else:
-            partial_epoch = False
 
         # return to the start of the training set
         pipeline.scan_to(start_example)
@@ -310,13 +314,13 @@ def main():
             batch_loss, train_time = train_batch(data, model, optimizer, device)
 
             # To keep training loss up to date with testing loss
-            if batch_in_epoch % testing_interval == 0 or batch_in_epoch == batches_per_epoch:
-                model.eval()
-                with torch.no_grad():
-                    data = data.to(device)
-                    output = model(data.x, data.edge_index, data.edge_attr)
-                    loss, _ = loss_function(output,data)
-                batch_loss = loss.sqrt().item()
+            #if batch_in_epoch % testing_interval == 0 or batch_in_epoch == batches_per_epoch:
+            #    model.eval()
+            #    with torch.no_grad():
+            #        data = data.to(device)
+            #        output = model(data.x, data.edge_index, data.edge_attr)
+            #        loss, _ = loss_function(output,data)
+            #    batch_loss = loss.sqrt().item()
             
             history.train.log_batch(train_time, t_wait, data.n_examples, len(data.x), batch_loss, epoch=epoch)
 
