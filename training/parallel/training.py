@@ -12,6 +12,7 @@ if __name__ == '__main__': print("loading torch...")
 import torch
 from torch.multiprocessing import freeze_support
 torch.set_default_dtype(torch.float64)
+import numpy as np
 if __name__ == '__main__': print("loading torch_geometric...")
 import torch_geometric as tg
 if __name__ == '__main__': print("loading e3nn...")
@@ -20,7 +21,7 @@ import e3nn.point.data_helpers as dh
 from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
 from pipeline import Pipeline, Molecule, test_data_neighbors, generate_index_shuffle, generate_multi_jiggles_set
-from training_utils import train_batch, batch_examples, save_checkpoint, cull_checkpoints
+from training_utils import train_batch, batch_examples, save_checkpoint, cull_checkpoints, loss_function
 from history import TrainTestHistory
 from diagnostics import print_parameter_size, count_parameters, get_object_size
 from variable_networks import VariableParityNetwork
@@ -98,6 +99,8 @@ def main():
         model.load_state_dict(model_dict["state_dict"])
     model.to(device)
     print("Done.")
+
+    print_parameter_size(model)
 
     Rs_in = config.model.Rs_in
     Rs_out = config.model.Rs_out
@@ -193,7 +196,10 @@ def main():
             print(f"Saving test/train shuffle indices to {config.data.test_train_shuffle}...")
             torch.save(test_train_shuffle, config.data.test_train_shuffle)
 
-    test_set_indices, training_shuffle = test_train_shuffle[:testing_size], test_train_shuffle[testing_size:]        
+    #test_set_indices, training_shuffle = test_train_shuffle[:testing_size], test_train_shuffle[testing_size:]    
+
+    # Sanity check: train and test on same data:    
+    test_set_indices, training_shuffle = test_train_shuffle[:testing_size], test_train_shuffle[testing_size:]
 
     #print("Test set indices:")
     #print(test_set_indices[:100], "...")
@@ -294,7 +300,23 @@ def main():
             data = pipeline.get_batch()
             t_wait = time.time()-time1
 
+            #if epoch == start_epoch and batch_in_epoch == 1:
+            #    print("\nTesting positions:")
+            #    print(testing_batches[0].pos)
+            #    print("\nTraining positions:")
+            #    print(data.pos)
+
+
             batch_loss, train_time = train_batch(data, model, optimizer, device)
+
+            # To keep training loss up to date with testing loss
+            if batch_in_epoch % testing_interval == 0 or batch_in_epoch == batches_per_epoch:
+                model.eval()
+                with torch.no_grad():
+                    data = data.to(device)
+                    output = model(data.x, data.edge_index, data.edge_attr)
+                    loss, _ = loss_function(output,data)
+                batch_loss = loss.sqrt().item()
             
             history.train.log_batch(train_time, t_wait, data.n_examples, len(data.x), batch_loss, epoch=epoch)
 
@@ -302,7 +324,7 @@ def main():
                 history.run_test(model)
 
             if batch_in_epoch % save_interval == 0 or batch_in_epoch == batches_per_epoch:
-                checkpoint_filename = f"{save_prefix}-epoch_{epoch:03d}-checkpoint.torch"
+                checkpoint_filename = f"{save_prefix}-e{epoch:03d}_b{batch_in_epoch:05}-checkpoint.torch"
                 save_checkpoint(model_kwargs, model, checkpoint_filename, optimizer, all_elements)
                 history.save()
                 if num_checkpoints:
