@@ -9,7 +9,7 @@ from e3nn.non_linearities.rescaled_act import sigmoid, swish, tanh
 from e3nn.point.operations import Convolution
 from e3nn.radial import GaussianRadialModel
 from e3nn.tensor_product import LearnableTensorSquare
-from batchnorm import BatchNorm
+from e3nn.batchnorm import BatchNorm
 
 class VariableParityNetwork(torch.nn.Module):
     def __init__(self, Rs_in, Rs_out, lmaxes, muls, 
