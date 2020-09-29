@@ -178,6 +178,16 @@ class Config:
         for e in self.relevant_elements:
             assert e in self.all_elements, f"relevant element {e} not found in all_elements"
         assert len(self.relevant_elements) == len(set(self.relevant_elements)), "duplicate element"
+
+        # affine correction to database
+        self.load_section('affine_correction', key_func=title_case, eval_func=eval)
+        if self.affine_correction.Correct:
+            self.affine_correction = {self.atomic_number(e) : v for e,v in self.affine_correction.items()}
+            for e in self.relevant_elements:
+                if e not in self.affine_correction:
+                    self.affine_correction[e] = (1., 0.)
+        else:
+            self.affine_correction = False
         
         # see reference training.ini for all the parameters in 'data'
         self.load_section('data', eval_func=eval, eval_funcs={'hdf5_filenames':glob},
@@ -261,7 +271,9 @@ class Config:
         self.training.save_prefix = ""   # save checkpoints to files starting with this
         self.training.learning_rate = 0        # learning rate
         self.training.resume = False
-        self.training.num_checkpoints
+        self.training.num_checkpoints = 10
+
+        self.affine_correction = {}
 
 
 
