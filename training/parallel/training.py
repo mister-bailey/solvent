@@ -82,6 +82,7 @@ def main():
             model_kwargs.update(model_dict['model_kwargs'])
             all_elements = model_dict['all_elements']
             assert set(all_elements) == set(config.all_elements), "Loaded model elements and config elements don't match!"
+            config.all_elements = all_elements
         else:
             print(f"Could not find any checkpoints matching '{save_prefix + '-*-checkpoint.torch'}'!")
             if input("Restart training, OVERWRITING previous training history? (y/n) ").lower().strip() != 'y':
@@ -99,6 +100,8 @@ def main():
         model.load_state_dict(model_dict["state_dict"])
     model.to(device)
     print("Done.")
+
+    Molecule.initialize_one_hot_table(all_elements)
 
     print_parameter_size(model)
 
@@ -204,13 +207,15 @@ def main():
     #print("Test set indices:")
     #print(test_set_indices[:100], "...")
 
+    print(f"Affine correction: {config.affine_correction}")
+
+
     ### set up molecule pipeline ###
 
     print("\n=== Starting molecule pipeline ===\n")
     print("Working...", end='\r', flush=True)
     relevant_elements = config.relevant_elements
     pipeline = Pipeline(config)
-    testing_molecules_dict = pipeline.testing_molecules_dict
 
     print("\n=== Preprocessing Testing Data ===\n")
     print("Setting test indices...")
@@ -241,7 +246,7 @@ def main():
 
     time2 = time.time()
     print(f"Done preprocessing testing data!  That took {time2-time1:.3f} s.\n")
-    testing_molecules_dict = dict(testing_molecules_dict)
+    #testing_molecules_dict = dict(pipeline.testing_molecules_dict)
 
     ## test/train history ##
     batches_per_epoch = math.ceil(training_size/batch_size)
@@ -265,7 +270,7 @@ def main():
             resume = False
     if not resume:
         history = TrainTestHistory(training_size, save_prefix, testing_batches,
-                               relevant_elements, testing_molecules_dict, device, config.number_to_symbol)
+                               relevant_elements, device, config.number_to_symbol)
         partial_epoch = False
         start_epoch = 1
 

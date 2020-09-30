@@ -50,17 +50,26 @@ class Molecule():
 
     one_hot_table = np.zeros((0,0))
 
+    # initialize one-hot table
+    # also initalizes revers look-up for atomic numbers
     @staticmethod
     def initialize_one_hot_table(all_elements):
         max_element = max(all_elements)
         Molecule.one_hot_table = np.zeros((max_element+1, len(all_elements)), dtype=np.float64)
+        Molecule.atomic_number_index = np.zeros(len(all_elements), dtype=np.int32)
         for i, e in enumerate(all_elements):
             Molecule.one_hot_table[e][i] = 1.0
+            Molecule.atomic_number_index[i] = e
 
     # generates one-hots for a list of atomic_numbers
     @staticmethod
     def get_one_hots(atomic_numbers):
         return Molecule.one_hot_table[atomic_numbers]
+
+    # get atomic number(s) from one-hots
+    @staticmethod
+    def get_atomic_numbers(one_hots):
+        return one_hots @ Molecule.atomic_number_index
 
     # compute weights for loss function
     @staticmethod
@@ -73,21 +82,6 @@ class Molecule():
             for i in l:
                 weights[i] = weight
         return weights
-
-
-def str2array(s):
-    # https://stackoverflow.com/questions/35612235/how-to-read-numpy-2d-array-from-string
-    s = re.sub('\[ +', '[', s.strip())
-    s = re.sub('[,\s]+', ', ', s)
-    a = ast.literal_eval(s)
-    if len(a) == 0 or a is None:
-        return []
-    else:
-        for i, b in enumerate(a):
-            for j, _ in enumerate(b):
-                a[i][j] += -1
-        return a
-
 
 ### Parallel Preprocessing Code ###
 
@@ -143,9 +137,9 @@ class Pipeline():
         self.share_batches = share_batches
         # self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
         #                                    (self, max_radius, Rs_in, Rs_out))
-        self.testing_molecules_dict = manager.dict()
+        #self.testing_molecules_dict = manager.dict()
 
-        self.dataset_reader = DatasetReader("dataset_reader", self, config, self.testing_molecules_dict, new_process=new_process)
+        self.dataset_reader = DatasetReader("dataset_reader", self, config, new_process=new_process)
         if new_process:
             self.dataset_reader.start()
 
@@ -155,7 +149,7 @@ class Pipeline():
     #    return self_dict
 
     # methods for pipeline user/consumer:
-    def start_reading(self, examples_to_read, make_molecules=True, record_in_dict=False, batch_size=None, wait=False):
+    def start_reading(self, examples_to_read, make_molecules=True, batch_size=None, wait=False):
         #print("Start reading...")
         assert check_semaphore(
             self.finished_reading), "Tried to start reading file, but already reading!"
@@ -165,7 +159,7 @@ class Pipeline():
         set_semaphore(self.knows, False)
         self.working.acquire()
         self.command_queue.put(StartReading(
-            examples_to_read, make_molecules, record_in_dict, batch_size))
+            examples_to_read, make_molecules, batch_size))
         if wait:
             self.wait_till_done()
 
@@ -279,14 +273,14 @@ class ScanTo(DatasetSignal):
 
 
 class StartReading(DatasetSignal):
-    def __init__(self, examples_to_read, make_molecules=True, record_in_dict=False, batch_size=None):
+    def __init__(self, examples_to_read, make_molecules=True, batch_size=None):
         self.examples_to_read = examples_to_read
         self.make_molecules = make_molecules
-        self.record_in_dict = record_in_dict
+        #self.record_in_dict = record_in_dict
         self.batch_size = batch_size
 
     def __str__(self):
-        r = f"StartReading(examples_to_read={self.examples_to_read}, make_molecules={self.make_molecules}, record_in_dict={self.record_in_dict}"
+        r = f"StartReading(examples_to_read={self.examples_to_read}, make_molecules={self.make_molecules}"
         if self.batch_size is not None:
             r += f", batch_size={self.batch_size}"
         return r + ")"
@@ -315,8 +309,7 @@ class SetIndices(DatasetSignal):
 
 
 class DatasetReader(Process):
-    def __init__(self, name, pipeline, config,
-                 testing_molecules_dict, shuffle_incoming=False, new_process=True, requested_jiggles=1):
+    def __init__(self, name, pipeline, config, shuffle_incoming=False, new_process=True, requested_jiggles=1):
         if new_process:
             super().__init__(group=None, target=None, name=name)
         self.new_process = new_process
@@ -327,7 +320,7 @@ class DatasetReader(Process):
         self.hdf5_file_index = 0               # which example within the hdf5 file
         self.all_elements = config.all_elements
         self.requested_jiggles = requested_jiggles  # how many jiggles per file
-        self.testing_molecules_dict = testing_molecules_dict   # ID -> Molecule
+        #self.testing_molecules_dict = testing_molecules_dict   # ID -> Molecule
         self.molecule_pipeline = None
         self.molecule_pipeline_args = (config.training.batch_size, config.max_radius, config.all_elements,
                                        config.relevant_elements, config.data.n_molecule_processors,
@@ -381,7 +374,7 @@ class DatasetReader(Process):
                 #self.molecule_number = 0
             elif isinstance(command, StartReading):
                 self.molecule_pipeline.notify_starting(command.batch_size)
-                self.read_examples(command.examples_to_read, command.make_molecules, command.record_in_dict)
+                self.read_examples(command.examples_to_read, command.make_molecules)
                 self.pipeline.set_finished_reading()
                 while self.molecule_pipeline.any_batch_coming():
                     self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
@@ -395,7 +388,7 @@ class DatasetReader(Process):
 
     # iterate through hdf5 filenames, picking up where we left off
     # returns: number of examples processed
-    def read_examples_from_file(self, examples_to_read, make_molecules, record_in_dict):
+    def read_examples_from_file(self, examples_to_read, make_molecules):
         examples_read = 0       # how many examples have been processed this round
         assert self.hdf5_file_list_index < len(self.hdf5_filenames), \
             "request to read examples, but files are finished!"
@@ -403,17 +396,17 @@ class DatasetReader(Process):
             hdf5_filename = self.hdf5_filenames[self.hdf5_file_list_index]
             #print(f"{self.name}: filename={hdf5_filename} file_list_index={self.hdf5_file_list_index} file_index={self.hdf5_file_index}")
             examples_read += self.read_hdf5(
-                hdf5_filename, examples_to_read - examples_read, make_molecules, record_in_dict)
+                hdf5_filename, examples_to_read - examples_read, make_molecules)
             if self.hdf5_file_list_index >= len(self.hdf5_filenames):
                 break
         return examples_read
 
     # I've removed the original hdf5 reader, since we don't use that format any more
     # you can find it on the github
-    def read_hdf5_format_0(self, filename, examples_to_read, make_molecules, record_in_dict):
+    def read_hdf5_format_0(self, filename, examples_to_read, make_molecules):
         raise Exception("Old hdf5 format not supported!")
 
-    def read_hdf5_format_1(self, filename, examples_to_read, make_molecules, record_in_dict):
+    def read_hdf5_format_1(self, filename, examples_to_read, make_molecules):
         with h5py.File(filename, "r") as h5:
             if make_molecules:
                 examples_read = 0
@@ -422,8 +415,8 @@ class DatasetReader(Process):
                             dataset[..., 3], dataset.attrs["atomic_numbers"],
                             weights=dataset.attrs["weights"])
                     self.pipeline.put_molecule_to_ext(molecule)
-                    if record_in_dict:
-                        self.testing_molecules_dict[molecule.ID] = molecule
+                    #if record_in_dict:
+                    #    self.testing_molecules_dict[molecule.ID] = molecule
 
                     while self.pipeline.ext_batch_ready():
                         self.pipeline.put_batch(
@@ -452,7 +445,7 @@ class DatasetReader(Process):
                     self.hdf5_file_index += examples_to_read
                     return examples_to_read
 
-    def read_examples_from_SQL(self, examples_to_read, make_molecules, record_in_dict):
+    def read_examples_from_SQL(self, examples_to_read, make_molecules):
         examples_read = 0
         while examples_read < examples_to_read:
             i=0
@@ -464,8 +457,8 @@ class DatasetReader(Process):
                                         data[:, 0].astype(np.int32), weights=weights)
                     #print(f"# ID: {molecule.ID}")
                     self.pipeline.put_molecule_to_ext(molecule)
-                    if record_in_dict:
-                        self.testing_molecules_dict[molecule.ID] = molecule
+                    #if record_in_dict:
+                    #    self.testing_molecules_dict[molecule.ID] = molecule
                 examples_read += 1
                 while self.pipeline.ext_batch_ready():
                     bad_call = self.pipeline.get_batch_from_ext()

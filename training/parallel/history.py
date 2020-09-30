@@ -9,13 +9,14 @@ import time
 from datetime import timedelta
 from training_utils import loss_function
 from training_config import Config
+from pipeline import Molecule
 
 
 class TrainTestHistory:
     def __init__(self, examples_per_epoch, save_prefix, testing_batches, relevant_elements,
-                 molecule_dict, device, number_to_symbol=None, smoothing_window=10, store_residuals=False):
+                 device, number_to_symbol=None, smoothing_window=10, store_residuals=False):
         self.train = TrainingHistory(examples_per_epoch, smoothing_window)
-        self.test = TestingHistory(testing_batches, relevant_elements, molecule_dict, device,
+        self.test = TestingHistory(testing_batches, relevant_elements, device,
                                   number_to_symbol=number_to_symbol, store_residuals=store_residuals)
         self.save_prefix = save_prefix
     
@@ -180,7 +181,7 @@ class TrainingHistory:
 class TestingHistory():
 
     # training_window_size: moving average for training_loss over this many minibatches
-    def __init__(self, testing_batches, relevant_elements, molecule_dict, device,
+    def __init__(self, testing_batches, relevant_elements, device,
             number_to_symbol=None, store_residuals=False):
         self.testing_batches = testing_batches
         self.device = device
@@ -192,11 +193,11 @@ class TestingHistory():
         atom_indices = {e:[] for e in relevant_elements}
         atom_index = 0
         for batch in testing_batches:
-            for example in batch.example_list:
-                for e in molecule_dict[example.ID].atomic_numbers:
-                    if e in relevant_elements:
-                        atom_indices[e].append(atom_index)
-                    atom_index += 1
+            atomic_numbers = Molecule.get_atomic_numbers(batch.x)
+            for e in atomic_numbers:
+                if e in relevant_elements:
+                    atom_indices[e].append(atom_index)
+                atom_index += 1
         self.atom_indices = {e:np.array(ai) for e,ai in atom_indices.items()}
 
         # precompute weight per testing batch and total testing weight
