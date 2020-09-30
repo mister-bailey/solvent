@@ -68,6 +68,7 @@ PyObject* molecule_pipeline_ext_newBatchGeneratorElements(PyObject* self, PyObje
 
 	BatchGenerator *bg = new BatchGenerator(batch_size, max_radius, elements_vec, relevant_elements_vec, num_threads, molecule_cap, example_cap, batch_cap, affine_dict);
 	
+	delete affine_dict;
 	return PyCapsule_New(bg, "BatchGenerator", (PyCapsule_Destructor)delete_BatchGenerator);
 }
 
