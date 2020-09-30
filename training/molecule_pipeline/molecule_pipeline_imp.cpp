@@ -10,7 +10,22 @@ Molecule::Molecule(int num_examples, int num_atoms, PyArrayObject *positions, Py
             PyArrayObject *output, PyArrayObject * weights, int ID) :
             num_examples(num_examples), num_atoms(num_atoms), positions(positions),
             features(features), output(output), weights(weights), ID(ID)
-            {   
+            {
+    int table_size = BatchGenerator::affine_table.size();
+    if(table_size){
+        ftype *one_hot = (ftype *)PyArray_DATA(features);
+        ftype *shielding = (ftype *)PyArray_DATA(output), *s;
+        for(int a=0; a<num_atoms; a++, one_hot+=BatchGenerator::num_elements, shielding++){
+            for(int e; e<table_size; e++){
+                if(one_hot[e] != 0 && BatchGenerator::affine_table[e].first != 0){
+                    s = shielding;
+                    double a = BatchGenerator::affine_table[e].first;
+                    double b = BatchGenerator::affine_table[e].second;
+                    for(int j=0; j<num_examples; j++, s+=num_atoms) *s = a * (*s) + b;
+                }
+            }
+        }  
+    }
 }
 
 Molecule::Molecule(int num_examples, int num_atoms, PyArrayObject *positions, const itype *elements,
@@ -67,6 +82,7 @@ void Example::releaseBuffers(){
 int BatchGenerator::num_elements;
 map<int, int> BatchGenerator::element_map;
 set<int> BatchGenerator::relevant_elements;
+vector<pair<double,double>> BatchGenerator::affine_table;
 
 
 void BatchGenerator::processMolecule(Molecule *m) {
@@ -295,6 +311,15 @@ void BatchGenerator::buildElementMap(vector<int> elements, vector<int> relevant_
     for(int i=0; i < num_elements; i++) element_map[elements[i]] = i;
 }
 
+void BatchGenerator::buildAffineTable(map<int, pair<double, double>> *affine_dict){
+    affine_table = vector<pair<double,double>>();
+    for(map<int, pair<double, double>>::iterator it = affine_dict->begin(); it != affine_dict->end(); it++){
+        int e = it->first;
+        if(e >= affine_table.size()) affine_table.resize(e + 1, {0,0});
+        affine_table[e] = it->second;
+    }
+}
+
 BatchGenerator::BatchGenerator(int batch_size, float max_radius, int feature_size, int output_size,
         int num_threads, int molecule_cap, int example_cap, int batch_cap) : 
         max_radius(max_radius), feature_size(feature_size), output_size(output_size),
@@ -308,13 +333,14 @@ BatchGenerator::BatchGenerator(int batch_size, float max_radius, int feature_siz
 }
 
 BatchGenerator::BatchGenerator(int batch_size, float max_radius, vector<int> elements, vector<int> relevant_elements,
-        int num_threads, int molecule_cap, int example_cap, int batch_cap) : 
+        int num_threads, int molecule_cap, int example_cap, int batch_cap, map<int, pair<double, double>> *affine_dict) : 
         max_radius(max_radius), feature_size(elements.size() * sizeof(ftype)), output_size(sizeof(ftype)),
         molecule_queue(molecule_cap),
         example_queue(example_cap), 
         batch_queue(batch_cap)
 {
     buildElementMap(elements, relevant_elements);
+    if(affine_dict != NULL) buildAffineTable(affine_dict);
 	molecule_threads.reserve(num_threads);
     for(int i=0; i < num_threads; i++) molecule_threads.push_back(thread(moleculeThreadRun, this));
     batch_thread = thread(batchThreadRun, this);

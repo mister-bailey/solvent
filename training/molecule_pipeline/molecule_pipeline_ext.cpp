@@ -14,13 +14,27 @@ void delete_BatchGenerator(PyObject* capsule) {
 	delete (BatchGenerator*)PyCapsule_GetPointer(capsule, "BatchGenerator");
 }
 
+map<int, pair<double, double>> *parse_affine_dict(PyObject *py_dict){
+	map<int, pair<double, double>> *c_dict = new map<int, pair<double, double>>();
+	PyObject *py_list = PyDict_Items(py_dict);
+	int size = PyList_Size(py_list);
+	for(int i; i < size; i++){
+		int e;
+		double a, b;
+		PyArg_ParseTuple(PyList_GetItem(py_list, i), "i(dd)", &e, &a, &b);
+		(*c_dict)[e] = {a,b};
+	}
+	Py_DECREF(py_list);
+	return c_dict;
+}
+
 PyDoc_STRVAR(molecule_pipeline_ext_newBatchGenerator_doc, "newBatchGenerator(batch_size, max_radius, feature_size, output_size, num_threads, molecule_cap, example_cap, batch_cap)");
 PyObject* molecule_pipeline_ext_newBatchGenerator(PyObject* self, PyObject* args, PyObject* kwargs) {
 	int batch_size, feature_size, output_size, num_threads, molecule_cap, example_cap, batch_cap;
 	float max_radius;
 	/* Parse positional and keyword arguments */
 	static char* keywords[] = {"batch_size", "max_radius", "feature_size", "output_size", "num_threads", "molecule_cap", "example_cap", "batch_cap", NULL };
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ifiiiiii|p", keywords, &batch_size, &max_radius, &feature_size, &output_size, &num_threads, &molecule_cap, &example_cap, &batch_cap))
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ifiiiiii", keywords, &batch_size, &max_radius, &feature_size, &output_size, &num_threads, &molecule_cap, &example_cap, &batch_cap))
 		return NULL;
 
 	BatchGenerator *bg = new BatchGenerator(batch_size, max_radius, feature_size * sizeof(ftype), output_size * sizeof(ftype), num_threads, molecule_cap, example_cap, batch_cap);
@@ -28,22 +42,19 @@ PyObject* molecule_pipeline_ext_newBatchGenerator(PyObject* self, PyObject* args
 	return (PyObject *) PyCapsule_New(bg, "BatchGenerator", (PyCapsule_Destructor)delete_BatchGenerator);
 }
 
-PyDoc_STRVAR(molecule_pipeline_ext_newBatchGeneratorElements_doc, "newBatchGeneratorElements(batch_size, max_radius, elements, relevant_elements, num_threads, molecule_cap, example_cap, batch_cap)");
+PyDoc_STRVAR(molecule_pipeline_ext_newBatchGeneratorElements_doc, "newBatchGeneratorElements(batch_size, max_radius, elements, relevant_elements, num_threads, molecule_cap, example_cap, batch_cap, affine = None)");
 PyObject* molecule_pipeline_ext_newBatchGeneratorElements(PyObject* self, PyObject* args, PyObject* kwargs) {
 	int batch_size, num_threads, molecule_cap, example_cap, batch_cap;
 	float max_radius;
 	PyArrayObject *elements, *relevant_elements;
+	PyObject *affine=NULL;
 	/* Parse positional and keyword arguments */
-	static char* keywords[] = {"batch_size", "max_radius", "elements", "relevant_elements", "num_threads", "molecule_cap", "example_cap", "batch_cap", NULL };
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ifOOiiii|p", keywords, &batch_size, &max_radius, &elements, &relevant_elements, &num_threads, &molecule_cap, &example_cap, &batch_cap))
+	static char* keywords[] = {"batch_size", "max_radius", "elements", "relevant_elements", "num_threads", "molecule_cap", "example_cap", "batch_cap", "affine", NULL };
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ifOOiiii|O", keywords, &batch_size, &max_radius, &elements, &relevant_elements, &num_threads, &molecule_cap, &example_cap, &batch_cap, &affine))
 		return NULL;
 
-	/*
-	printf("newBatchGeneratorElements:\n");
-	printf(" batch_size = %d\n", batch_size);
-	printf(" max_radius = %f\n", max_radius);
-	printf(" num_threads = %d\n", num_threads);
-	*/
+	map<int, pair<double, double>> *affine_dict = NULL;
+	if(affine != NULL && affine != Py_None) affine_dict = parse_affine_dict(affine);
 
 	elements = (PyArrayObject *)PyArray_FROM_OT((PyObject *)elements, NPY_INT64);
 	vector<int> elements_vec;
@@ -55,7 +66,7 @@ PyObject* molecule_pipeline_ext_newBatchGeneratorElements(PyObject* self, PyObje
 	for(int i=0; i < PyArray_DIM(relevant_elements,0); i++) relevant_elements_vec.push_back(*((itype *)PyArray_GETPTR1(relevant_elements, i)));
 	Py_DECREF(relevant_elements);
 
-	BatchGenerator *bg = new BatchGenerator(batch_size, max_radius, elements_vec, relevant_elements_vec, num_threads, molecule_cap, example_cap, batch_cap);
+	BatchGenerator *bg = new BatchGenerator(batch_size, max_radius, elements_vec, relevant_elements_vec, num_threads, molecule_cap, example_cap, batch_cap, affine_dict);
 	
 	return PyCapsule_New(bg, "BatchGenerator", (PyCapsule_Destructor)delete_BatchGenerator);
 }
@@ -320,3 +331,4 @@ static PyModuleDef molecule_pipeline_ext_def = {
 PyMODINIT_FUNC PyInit_molecule_pipeline_ext() {
     return PyModuleDef_Init(&molecule_pipeline_ext_def);
 }
+

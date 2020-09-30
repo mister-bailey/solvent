@@ -180,14 +180,18 @@ class Config:
         assert len(self.relevant_elements) == len(set(self.relevant_elements)), "duplicate element"
 
         # affine correction to database
-        self.load_section('affine_correction', key_func=title_case, eval_func=eval)
-        if self.affine_correction.Correct:
-            self.affine_correction = {self.atomic_number(e) : v for e,v in self.affine_correction.items()}
-            for e in self.relevant_elements:
-                if e not in self.affine_correction:
-                    self.affine_correction[e] = (1., 0.)
+        if "affine_correction" in self._parser:
+            self.load_section('affine_correction', eval_func=eval)
+            if self.affine_correction.correct:
+                self.affine_correction = {self.atomic_number(title_case(e)) : v
+                            for e,v in self.affine_correction.items() if e != 'correct'}
+                for e in self.relevant_elements:
+                    if e not in self.affine_correction:
+                        self.affine_correction[e] = (1., 0.)
+            else:
+                self.affine_correction = None
         else:
-            self.affine_correction = False
+            self.affine_correction = None
         
         # see reference training.ini for all the parameters in 'data'
         self.load_section('data', eval_func=eval, eval_funcs={'hdf5_filenames':glob},

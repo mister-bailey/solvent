@@ -1,6 +1,7 @@
 import numpy as np
 import molecule_pipeline_ext
 from torch import as_tensor, transpose
+import sys
 
 #as_tensor = None
 
@@ -37,13 +38,13 @@ class ExampleBatch():
 
 class MoleculePipeline():
     def __init__(self, batch_size, max_radius, feature_size, output_size, num_threads = 2,
-            molecule_cap = 10000, example_cap = 10000, batch_cap = 100):
+            molecule_cap = 10000, example_cap = 10000, batch_cap = 100, affine_dict = None):
         if isinstance(feature_size, int):
             self.capsule = molecule_pipeline_ext.newBatchGenerator(batch_size, max_radius, feature_size,
                     output_size, num_threads, molecule_cap, example_cap, batch_cap)
         else:
             self.capsule = molecule_pipeline_ext.newBatchGeneratorElements(batch_size, max_radius, feature_size,
-                    output_size, num_threads, molecule_cap, example_cap, batch_cap)
+                    output_size, num_threads, molecule_cap, example_cap, batch_cap, affine_dict)
             feature_size = len(feature_size)
             output_size = 1
 

@@ -18,6 +18,7 @@ Copyright Michael Bailey 2020
 #include <stdint.h>
 #include <map>
 #include <set>
+#include <algorithm>
 #include <stdio.h>
 
 #define MEMSAFE lock_guard<mutex> lg(alloc_mutex); //if(this->end) return;
@@ -152,6 +153,7 @@ class BatchGenerator {
     bool finished_reading = false;
 
     void buildElementMap(vector<int> elements, vector<int> relevant_elements);
+    void buildAffineTable(map<int, pair<double, double>> *affine_dict);
 
     bool anyExComing();
     void waitTillExComing();
@@ -170,6 +172,7 @@ public:
     static int num_elements;
     static map<int, int> element_map;
     static set<int> relevant_elements;
+    static vector<pair<double,double>> affine_table;
 
 	//static BatchGenerator* makeBatchGenerator();
 	static void batchThreadRun(BatchGenerator* bg);
@@ -182,7 +185,7 @@ public:
 	BatchGenerator(int batch_size, float max_radius, int feature_size, int output_size, int num_threads, int molecule_cap,
             int example_cap, int batch_cap);
 	BatchGenerator(int batch_size, float max_radius, vector<int> elements, vector<int> relevant_elements, int num_threads, int molecule_cap,
-            int example_cap, int batch_cap);
+            int example_cap, int batch_cap, map<int, pair<double, double>> *affine_dict = NULL);
 	~BatchGenerator();
 
     bool putMolecule(Molecule *molecule, bool block=true);
