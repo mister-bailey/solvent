@@ -325,7 +325,7 @@ class DatasetReader(Process):
         self.molecule_pipeline_args = (config.training.batch_size, config.max_radius, config.all_elements,
                                        config.relevant_elements, config.data.n_molecule_processors,
                                        config.data.molecule_queue_cap, config.data.example_queue_cap,
-                                       config.data.batch_queue_cap)
+                                       config.data.batch_queue_cap, config.affine_correction)
         #print(f"molecule_pipeline_args = {self.molecule_pipeline_args}")
         #self.molecule_number = 0
         self.index_pos = 0
