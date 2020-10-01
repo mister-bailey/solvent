@@ -52,15 +52,22 @@ class TrainingRun:
         self.config = Config(*filenames, self.settings)
         return self.config
 
-    def execute_run(self):
-        print(f"Executing run {self.identifier}...")
-        self.last_execution = subprocess.run("python training.py " + self.config_file,
+    def execute_run(self, configs=[]):
+        configs.append(self.config_file)
+        print("\n==============================================")
+        print(f"Run {self.identifier}:")
+        print(f"      run dir: {self.run_dir}")
+        print(f"  save_prefix: {self.save_prefix}")
+        print(f"  config file: {self.config_file}")
+        print("----------------------------------------------\n")
+        self.last_execution = subprocess.run("python training.py " + " ".join(configs),
                               input=b"y\ny\ny\ny\n")
         
 class EnsembleOfRuns:
 
-    def __init__(self, parent_dir="runs/", use_existing=True, start_training=False):
+    def __init__(self, parent_dir="runs/", use_existing=True, config=None, start_training=False):
         self.parent_dir = parent_dir
+        self.config = config
         if use_existing:
             self.runs = {d.name: TrainingRun(parent_dir=parent_dir, identifier=d.name)
                          for d in os.scandir(parent_dir) if d.is_dir()}
@@ -69,16 +76,11 @@ class EnsembleOfRuns:
     # num < 0 means keep on going
     def training_cycle(self, num=-1):
         print(f"Training ensemble of runs for {num} cycles...")
+        configs = [] if self.config is None else [self.config]
         n = 0
         while n != num:
             for run in self.runs.values():
-                print("\n==============================================")
-                print(f"Run {run.identifier}:")
-                print(f"      run dir: {run.run_dir}")
-                print(f"  save_prefix: {run.save_prefix}")
-                print(f"  config file: {run.config_file}")
-                print("----------------------------------------------\n")
-                run.execute_run()
+                run.execute_run(configs)
 
     
     def generate_parameters(self, var):
@@ -105,11 +107,10 @@ class EnsembleOfRuns:
         return settings
 
 
-
-
 if __name__ == '__main__':
     # do something here
-    ensemble = EnsembleOfRuns()
+    config = sys.argv[1] if len(sys.argv) > 1 else "exploration.ini"
+    ensemble = EnsembleOfRuns(config = config)
     if len(sys.argv) > 1:
         num = int(sys.argv[1])
     else:
