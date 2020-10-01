@@ -329,17 +329,19 @@ def main():
             
             history.train.log_batch(train_time, t_wait, data.n_examples, len(data.x), batch_loss, epoch=epoch)
 
-            if batch_in_epoch % testing_interval == 0 or batch_in_epoch == batches_per_epoch:
+            if batch_in_epoch % testing_interval == 0 or not pipeline.any_coming():
                 history.run_test(model)
 
-            if batch_in_epoch % save_interval == 0 or batch_in_epoch == batches_per_epoch:
+            times_up = time_limit is not None and history.elapsed_time() - start_elapsed >= time_limit
+
+            if batch_in_epoch % save_interval == 0 or not pipeline.any_coming() or times_up:
                 checkpoint_filename = f"{save_prefix}-e{epoch:03d}_b{batch_in_epoch:05}-checkpoint.torch"
                 save_checkpoint(model_kwargs, model, checkpoint_filename, optimizer, all_elements)
                 history.save()
                 if num_checkpoints:
                     cull_checkpoints(save_prefix, num_checkpoints)
             
-            if time_limit is not None and history.elapsed_time() - start_elapsed >= time_limit:
+            if times_up:
                 print("                                                                                                 ")
                 print(f"Finished training for {str(timedelta(seconds=history.elapsed_time() - start_elapsed))[:-5]}.")
                 print("Cleaning up...")

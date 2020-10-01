@@ -60,7 +60,6 @@ class TrainingRun:
 class EnsembleOfRuns:
 
     def __init__(self, parent_dir="runs/", use_existing=True, start_training=False):
-        self.runs = {}
         self.parent_dir = parent_dir
         if use_existing:
             self.runs = {d.name: TrainingRun(parent_dir=parent_dir, identifier=d.name)
@@ -73,6 +72,12 @@ class EnsembleOfRuns:
         n = 0
         while n != num:
             for run in self.runs.values():
+                print("\n==============================================")
+                print(f"Run {run.identifier}:")
+                print(f"      run dir: {run.run_dir}")
+                print(f"  save_prefix: {run.save_prefix}")
+                print(f"  config file: {run.config_file}")
+                print("----------------------------------------------\n")
                 run.execute_run()
 
     
