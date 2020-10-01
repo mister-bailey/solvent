@@ -8,6 +8,7 @@ import os
 import math
 import sys
 from datetime import timedelta
+from copy import copy
 if __name__ == '__main__': print("loading torch...")
 import torch
 from torch.multiprocessing import freeze_support
@@ -70,6 +71,8 @@ def main():
         'convolution': DummyConvolution,
         'batch_norm': True,
         }
+    model_kwargs.update(config.model.kwargs)
+    model = VariableParityNetwork(**model_kwargs)
 
     save_prefix = config.training.save_prefix
     resume = config.training.resume and save_prefix
@@ -77,29 +80,27 @@ def main():
         model_filenames = glob(save_prefix + "-*-checkpoint.torch")
         if len(model_filenames) > 0:
             model_filename = max(model_filenames, key = os.path.getmtime)
-            print(f"Loading model from {model_filename}... ", end='')
+            print(f"Loading model from {model_filename}... ")
             model_dict = torch.load(model_filename)
-            model_kwargs.update(model_dict['model_kwargs'])
-            all_elements = model_dict['all_elements']
-            assert set(all_elements) == set(config.all_elements), "Loaded model elements and config elements don't match!"
-            config.all_elements = all_elements
+            model_kwargs_checkpoint = copy(model_kwargs)
+            model_kwargs_checkpoint.update(model_dict['model_kwargs'])
+            if model_kwargs != model_kwargs_checkpoint:
+                if input("Loaded model doesn't match config file! Build new model and overwrite old? (y/n) ").lower().strip() != 'y': exit()
+                resume=False
+            else:
+                assert set(config.all_elements) == set(model_dict['all_elements']), "Loaded model elements and config elements don't match!"
+                config.all_elements = model_dict['all_elements']
+                model.load_state_dict(model_dict["state_dict"])
         else:
             print(f"Could not find any checkpoints matching '{save_prefix + '-*-checkpoint.torch'}'!")
-            if input("Restart training, OVERWRITING previous training history? (y/n) ").lower().strip() != 'y':
-                print("Exiting...")
-                exit()
+            if input("Restart training, OVERWRITING previous training history? (y/n) ").lower().strip() != 'y': exit()
             resume=False
     if not resume:
-        print("Building a fresh model... ", end='')
-        model_kwargs.update(config.model.kwargs)
-        all_elements = config.all_elements
+        print("Building a fresh model... ")
+    all_elements = config.all_elements
 
-    model = VariableParityNetwork(**model_kwargs)
     print(model_kwargs)
-    if resume:
-        model.load_state_dict(model_dict["state_dict"])
     model.to(device)
-    print("Done.")
 
     Molecule.initialize_one_hot_table(all_elements)
 
