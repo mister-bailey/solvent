@@ -103,7 +103,7 @@ def main():
 
     Molecule.initialize_one_hot_table(all_elements)
 
-    print_parameter_size(model)
+    #print_parameter_size(model)
 
     Rs_in = config.model.Rs_in
     Rs_out = config.model.Rs_out
@@ -117,28 +117,29 @@ def main():
 
     # report configuration
     print("\n=== Configuration ===\n")
-    print("all_elements:                     ", all_elements)
-    print("relevant_elements:                ", config.relevant_elements)
-    print("jiggles_per_molecule:             ", config.data.jiggles_per_molecule)
-    print("testing_size:                     ", config.data.testing_size)
-    print("training_size:                    ", config.data.training_size)
-    print("n_molecule_processors:            ", config.data.n_molecule_processors)
-    print("molecule_queue_cap:               ", config.data.molecule_queue_cap)
-    print("example_queue_cap:                ", config.data.example_queue_cap)
-    print("batch_queue_cap:                  ", config.data.batch_queue_cap)
-    print("Rs_in:                            ", Rs_in)
-    print("Rs_out:                           ", Rs_out)
-    print("n_epochs:                         ", config.training.n_epochs)
-    print("batch_size:                       ", config.training.batch_size)
-    print("testing_interval:                 ", config.training.testing_interval)
-    print("save_interval:                    ", config.training.save_interval)
-    print("save_prefix:                      ", save_prefix)
-    print("learning_rate:                    ", config.training.learning_rate)
-    print("muls:                             ", model_kwargs['muls'])
-    print("lmaxes:                           ", model_kwargs['lmaxes'])
-    print("max_radius:                       ", max_radius)
-    print("number_of_basis:                  ", model_kwargs['number_of_basis'])
-    print("n_norm:                           ", model_kwargs['n_norm'])
+    print("all_elements:            ", all_elements)
+    print("relevant_elements:       ", config.relevant_elements)
+    print("jiggles_per_molecule:    ", config.data.jiggles_per_molecule)
+    print("testing_size:            ", config.data.testing_size)
+    print("training_size:           ", config.data.training_size)
+    print("n_molecule_processors:   ", config.data.n_molecule_processors)
+    print("molecule_queue_cap:      ", config.data.molecule_queue_cap)
+    print("example_queue_cap:       ", config.data.example_queue_cap)
+    print("batch_queue_cap:         ", config.data.batch_queue_cap)
+    print("Rs_in:                   ", Rs_in)
+    print("Rs_out:                  ", Rs_out)
+    print("n_epochs:                ", config.training.n_epochs)
+    print("batch_size:              ", config.training.batch_size)
+    print("testing_interval:        ", config.training.testing_interval)
+    print("save_interval:           ", config.training.save_interval)
+    print("save_prefix:             ", save_prefix)
+    print("learning_rate:           ", config.training.learning_rate)
+    print("muls:                    ", model_kwargs['muls'])
+    print("lmaxes:                  ", model_kwargs['lmaxes'])
+    print("max_radius:              ", max_radius)
+    print("number_of_basis:         ", model_kwargs['number_of_basis'])
+    print("n_norm:                  ", model_kwargs['n_norm'])
+    print("affine_correction:       ", config.affine_correction)
 
     # print model details
     print("\n=== Model and Optimizer ===\n")
@@ -200,15 +201,8 @@ def main():
             torch.save(test_train_shuffle, config.data.test_train_shuffle)
 
     #test_set_indices, training_shuffle = test_train_shuffle[:testing_size], test_train_shuffle[testing_size:]    
-
-    # Sanity check: train and test on same data:    
+ 
     test_set_indices, training_shuffle = test_train_shuffle[:testing_size], test_train_shuffle[testing_size:]
-
-    #print("Test set indices:")
-    #print(test_set_indices[:100], "...")
-
-    print(f"Affine correction: {config.affine_correction}")
-
 
     ### set up molecule pipeline ###
 
@@ -221,7 +215,7 @@ def main():
     print("Setting test indices...")
     time1 = time.time()
     pipeline.set_indices(test_set_indices)
-    pipeline.start_reading(testing_size, batch_size=1, record_in_dict=True)
+    pipeline.start_reading(testing_size, batch_size=1)
 
     # read in and process testing data directly to memory
     testing_examples = []
@@ -236,9 +230,14 @@ def main():
             exit()
         testing_examples.append(example)
         #if len(testing_examples) <= 5:
+        #    print(f"ID = {example.ID}")
+        #    in_out = torch.cat((Molecule.get_atomic_numbers(example.x).unsqueeze(1), example.y), 1)
+        #    for a in in_out:
+        #        print(a)
+        #    print()
         #    test_data_neighbors(example, Rs_in, Rs_out, max_radius, testing_molecules_dict)
-    assert len(testing_examples) == testing_size, \
-        f">>>>> expected {testing_size} testing examples but got {len(testing_examples)}"
+
+
     
     batch_size = config.training.batch_size
     print("Batching test examples...")

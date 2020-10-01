@@ -76,7 +76,7 @@ def main():
     print("\n=== Starting molecule pipeline ===\n")
     print("Working...", end='\r', flush=True)
     pipeline = Pipeline(config, new_process=False)
-    testing_molecules_dict = pipeline.testing_molecules_dict
+    #testing_molecules_dict = pipeline.testing_molecules_dict
 
     print("\n=== Processing test data ===\n")
     print("Setting test indices...")
@@ -88,7 +88,7 @@ def main():
     pipeline.dataset_reader.run()
 
     print("\n=== Reading into pipeline ===\n")
-    pipeline.start_reading(testing_size, batch_size=1, record_in_dict=True)
+    pipeline.start_reading(testing_size, batch_size=1)
 
     pipeline.dataset_reader.run()
 
@@ -115,7 +115,7 @@ def main():
 
     time2 = time.time()
     print(f"Done preprocessing testing data!  That took {time2-time1:.3f} s.\n")
-    testing_molecules_dict = dict(testing_molecules_dict)
+    #testing_molecules_dict = dict(testing_molecules_dict)
 
 
 

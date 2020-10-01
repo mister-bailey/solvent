@@ -16,12 +16,13 @@ Molecule::Molecule(int num_examples, int num_atoms, PyArrayObject *positions, Py
         ftype *one_hot = (ftype *)PyArray_DATA(features);
         ftype *shielding = (ftype *)PyArray_DATA(output), *s;
         for(int a=0; a<num_atoms; a++, one_hot+=BatchGenerator::num_elements, shielding++){
-            for(int e; e<table_size; e++){
+            for(int e=0; e<table_size; e++){
                 if(one_hot[e] != 0 && BatchGenerator::affine_table[e].first != 0){
                     s = shielding;
                     double a = BatchGenerator::affine_table[e].first;
                     double b = BatchGenerator::affine_table[e].second;
                     for(int j=0; j<num_examples; j++, s+=num_atoms) *s = a * (*s) + b;
+                    break;
                 }
             }
         }  
@@ -312,11 +313,10 @@ void BatchGenerator::buildElementMap(vector<int> elements, vector<int> relevant_
 }
 
 void BatchGenerator::buildAffineTable(map<int, pair<double, double>> *affine_dict){
-    affine_table = vector<pair<double,double>>();
+    affine_table = vector<pair<double,double>>(num_elements, {0.,0.});
     for(map<int, pair<double, double>>::iterator it = affine_dict->begin(); it != affine_dict->end(); it++){
         int e = it->first;
-        if(e >= affine_table.size()) affine_table.resize(e + 1, {0,0});
-        affine_table[e] = it->second;
+        affine_table[element_map[e]] = it->second;
     }
 }
 
