@@ -42,6 +42,7 @@ class ConfigSection:
         self._exclude_keys = set(exclude_keys)
         self._default = default
         self._defaults = defaults
+        self._sub_ini = []
 
         if load_all:
             self.load_all()
@@ -136,13 +137,22 @@ class Config:
             if (not key.startswith('_')) and key not in
             {'atomic_number', 'load_section', 'load_section_into_base', 'items'})
 
+    def get_sub_configs(self):
+        sub_configs = []
+        for _, section in self._parser.items():
+            for key, value in section.items():
+                if value is None and key.endswith('.ini'):
+                    del section[key]
+                    sub_configs.append(key)
+        return sub_configs
+
     # parses config files
     # later filenames overwrite values from earlier filenames
     # (so you can have mini configs that change just a few settings)
     def __init__(self, *filenames, settings=None, _set_names=False):
         if _set_names: # Only here to satisfy pylint and the code highlighter
             self._set_names()
-        self._parser = configparser.ConfigParser()
+        self._parser = configparser.ConfigParser(allow_no_value=True)
 
         if len(filenames) == 0:
             filenames = ["training.ini"]
@@ -152,8 +162,12 @@ class Config:
         #print(f"Loading config from files {filenames}...")
                 
         files_worked = self._parser.read(filenames)
-
         print(f"Loaded config from files {files_worked}.")
+
+        # load any sub-configs specified in the file:
+        sub_files = self._parser.read(self.get_sub_configs())
+        print(f"Loaded sub-config from files {sub_files}")
+        
 
         # load in extra caller-provided settings:
         if isinstance(settings, Mapping):
