@@ -300,7 +300,7 @@ def main():
         pipeline.scan_to(start_example)
 
         # process the training examples
-        pipeline.start_reading(training_size - start_example, True, False, batch_size=batch_size)
+        pipeline.start_reading(training_size - start_example, batch_size=batch_size)
 
         # iterate through all training examples    
         while pipeline.any_coming():

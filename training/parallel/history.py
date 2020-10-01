@@ -195,6 +195,7 @@ class TestingHistory():
         for batch in testing_batches:
             atomic_numbers = Molecule.get_atomic_numbers(batch.x)
             for e in atomic_numbers:
+                e = e.item()
                 if e in relevant_elements:
                     atom_indices[e].append(atom_index)
                 atom_index += 1
