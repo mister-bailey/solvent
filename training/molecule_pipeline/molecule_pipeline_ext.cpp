@@ -7,6 +7,7 @@ Python bindings for molecule_pipeline_ext
 #include <arrayobject.h>
 #include <time.h>
 #include <string>
+#include <stdlib.h>
 #include "molecule_pipeline_imp.h"
 
 
@@ -16,15 +17,44 @@ void delete_BatchGenerator(PyObject* capsule) {
 
 map<int, pair<double, double>> *parse_affine_dict(PyObject *py_dict){
 	map<int, pair<double, double>> *c_dict = new map<int, pair<double, double>>();
+	PyObject *key, *value;
+	Py_ssize_t ppos=0;
+	//printf("Iterate through dictionary items...\n");
+	while(true) {
+		if(!PyDict_Next(py_dict, &ppos, &key, &value)) break;
+		//printf("Parsing dict items: ");
+		int e = PyLong_AsLong(key);
+		//printf("%d ", e);
+		if(!PySequence_Check(value)){
+			printf("\nValue is not a sequence object!\n");
+			exit(1);
+		}
+		if(PySequence_Size(value) != 2){
+			printf("\nValue has %d elements!\n", PySequence_Size(value));
+			exit(1);
+		}
+		//printf("(");
+		double a = PyFloat_AsDouble(PySequence_ITEM(value, 0));
+		//printf("%f, ", a);
+		double b = PyFloat_AsDouble(PySequence_ITEM(value, 1));
+		//printf("%f)\n", b);
+		(*c_dict)[e] = {a,b};
+	}
+	//printf("Done iteration.\n");
+	/*
+	printf("Convert PyDict to PyList...");
 	PyObject *py_list = PyDict_Items(py_dict);
+	printf("Done.\n");
 	int size = PyList_Size(py_list);
 	for(int i; i < size; i++){
 		int e;
 		double a, b;
+		printf("Parsing list item... ");
 		PyArg_ParseTuple(PyList_GetItem(py_list, i), "i(dd)", &e, &a, &b);
+		printf("Elt %d: (%f, %f)\n", e, a, b);
 		(*c_dict)[e] = {a,b};
 	}
-	Py_DECREF(py_list);
+	Py_DECREF(py_list);*/
 	return c_dict;
 }
 
@@ -54,7 +84,9 @@ PyObject* molecule_pipeline_ext_newBatchGeneratorElements(PyObject* self, PyObje
 		return NULL;
 
 	map<int, pair<double, double>> *affine_dict = NULL;
+	//printf("Building C dictionary...\n");
 	if(affine != NULL && affine != Py_None) affine_dict = parse_affine_dict(affine);
+	//printf("Done building C dictionary.\n");
 
 	elements = (PyArrayObject *)PyArray_FROM_OT((PyObject *)elements, NPY_INT64);
 	vector<int> elements_vec;
