@@ -49,6 +49,9 @@ class TrainTestHistory:
     def log_batch(self, *args, **kwargs):
         self.train.log_batch(*args, **kwargs)
 
+    def elapsed_time(self):
+        return self.traing.elapsed_time[-1]
+
     def run_test(self, model, batch_number=None, epoch=None, batch_in_epoch=None, example_number=None, elapsed_time=None, *args, **kwargs):
         if batch_number is None: batch_number = len(self.train.loss)
         if epoch is None: epoch = self.train.epoch[-1]
