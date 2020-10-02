@@ -40,11 +40,18 @@ class TrainingRun:
             parser.write(self.config_file)
 
         self.settings = {sec : dict(parser[sec]) for sec in parser}
-        self.history = None
+        self.__history = None
 
     def load_history(self):
-        self.history = TrainTestHistory.load(prefix = self.save_prefix)
-        return self.history
+        self.__history = TrainTestHistory.load(prefix = self.save_prefix)
+        return self.__history
+
+    @property
+    def history(self):
+        if self.history is None:
+            self.load_history()
+        return self.__history
+        
 
     # creates a Config by reading from filenames then adding in self.settings
     # note that if *filenames is empty, we use training.ini + command line arguments
@@ -60,6 +67,7 @@ class TrainingRun:
         print(f"  save_prefix: {self.save_prefix}")
         print(f"  config file: {self.config_file}")
         print("----------------------------------------------\n")
+        self.history = None # a training run invalidates any loaded history
         self.last_execution = subprocess.run("python training.py " + " ".join(configs),
                               input=b"y\ny\ny\ny\n")
         
@@ -111,10 +119,6 @@ if __name__ == '__main__':
     # do something here
     config = sys.argv[1] if len(sys.argv) > 1 else "exploration.ini"
     ensemble = EnsembleOfRuns(config = config)
-    if len(sys.argv) > 1:
-        num = int(sys.argv[1])
-    else:
-        num = 10
     ensemble.training_cycle(10)
 
     

@@ -6,6 +6,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import math
 import time
+import bisect
 from datetime import timedelta
 from training_utils import loss_function
 from training_config import Config
@@ -16,7 +17,7 @@ class TrainTestHistory:
     def __init__(self, examples_per_epoch, save_prefix, testing_batches, relevant_elements,
                  device, number_to_symbol=None, smoothing_window=10, store_residuals=False):
         self.train = TrainingHistory(examples_per_epoch, smoothing_window)
-        self.test = TestingHistory(testing_batches, relevant_elements, device,
+        self.test = TestingHistory(examples_per_epoch, testing_batches, relevant_elements, device,
                                   number_to_symbol=number_to_symbol, store_residuals=store_residuals)
         self.save_prefix = save_prefix
     
@@ -48,26 +49,38 @@ class TrainTestHistory:
     def log_batch(self, *args, **kwargs):
         self.train.log_batch(*args, **kwargs)
 
-    def run_test(self, model, batch_number=None, epoch=None, batch_in_epoch=None, elapsed_time=None, *args, **kwargs):
+    def run_test(self, model, batch_number=None, epoch=None, batch_in_epoch=None, example_number=None, elapsed_time=None, *args, **kwargs):
         if batch_number is None: batch_number = len(self.train.loss)
         if epoch is None: epoch = self.train.epoch[-1]
         if batch_in_epoch is None: batch_in_epoch = self.train.batch_in_epoch[-1]
+        if example_number is None: example_number = self.train.example_number[-1]
         if elapsed_time is None: elapsed_time = self.train.elapsed_time[-1]
-        self.test.run_test(model, batch_number, epoch, batch_in_epoch, elapsed_time, *args, **kwargs)
+        self.test.run_test(model, batch_number, epoch, batch_in_epoch, example_number, elapsed_time, *args, **kwargs)
 
-    def elapsed_time(self, batch=-1):
-        return self.train.elapsed_time[batch]
+class BaseHistory:
+
+    def total_examples(self, index=-1):
+        return (self.epoch[index] - 1) * self.examples_per_epoch + self.example_number[index]
+
+    # methods for finding comparison points
+
+    def max_epoch_batch(self):
+        return self.epoch[-1], self.batch[-1]
+
+    def max_batch(self):
+        raise Exception("This should be overloaded!")
+
+    def max_epoch_example(self):
+        return self.epoch[-1], self.example_number[-1]
+
+    def max_example(self):
+        return self.total_examples()
+
+    def max_time(self):
+        return self.elapsed_time[-1]
         
 
-# returns the first non-None argument
-# eg., user-specified value could be arg1, default could be arg2
-def alt(*args):
-    for arg in args:
-        if arg is not None:
-            return arg
-    return None
-
-class TrainingHistory:
+class TrainingHistory(BaseHistory):
     def __init__(self, examples_per_epoch, smoothing_window=10):
         self.examples_per_epoch = examples_per_epoch
         self.smoothing_window = smoothing_window
@@ -162,8 +175,8 @@ class TrainingHistory:
         """
         return self.example_number[batch] if not self.ends_epoch(batch) else 0
 
-    def total_examples(self, batch=-1):
-        return (self.epoch[batch] - 1) * self.examples_per_epoch + self.example_number[batch]
+    def max_batch(self):
+        return len(self.loss) - 1
         
     # x_axis = 'time' and y_axis = 'loss' are also allowed
     def plot(self, figure=None, x_axis='batch_number', y_axis='smoothed_loss'):
@@ -178,11 +191,12 @@ class TrainingHistory:
 
 
 
-class TestingHistory():
+class TestingHistory(BaseHistory):
 
     # training_window_size: moving average for training_loss over this many minibatches
-    def __init__(self, testing_batches, relevant_elements, device,
+    def __init__(self, examples_per_epoch, testing_batches, relevant_elements, device,
             number_to_symbol=None, store_residuals=False):
+        self.examples_per_epoch = examples_per_epoch
         self.testing_batches = testing_batches
         self.device = device
         self.relevant_elements = relevant_elements
@@ -209,12 +223,15 @@ class TestingHistory():
         self.batch_number = []
         self.epoch = []
         self.batch_in_epoch = []
+        self.example_number = []
         self.elapsed_time = []
         self.loss = []
         self.mean_error_by_element = []
         self.RMSE_by_element = []
 
-
+    def max_batch(self):
+        return self.batch_number[-1]
+        
     def plot(self, figure=None, x_axis='batch_number'): # x_axis = 'time' is also allowed
         x_axis = self.batch_number if x_axis=='batch number' else self.elapsed_time
         if figure is None:
@@ -223,8 +240,8 @@ class TestingHistory():
         if figure is None:
             plt.legend(loc="best")
 
-    def run_test(self, model, batch_number, epoch, batch_in_epoch, elapsed_time, verbose=True, log=True):
-        if verbose: print("\nTesting batches...", end="\r", flush=True)
+    def run_test(self, model, batch_number, epoch, batch_in_epoch, example_number, elapsed_time, verbose=True, log=True):
+        if verbose: print("\n")
 
         time0 = time.time()
 
@@ -232,7 +249,8 @@ class TestingHistory():
         residual_chunks = []
         model.eval() # don't compute running means
         with torch.no_grad(): # don't compute gradients
-            for batch in self.testing_batches:
+            for i, batch in enumerate(self.testing_batches):
+                if verbose: print(f"Testing batches...  {i:3} / {len(self.testing_batches)}   ", end="\r", flush=True)
                 batch.to(self.device)
                 loss, chunk = loss_function(model(batch.x, batch.edge_index, batch.edge_attr), batch)
                 losses.append(loss)
@@ -263,20 +281,36 @@ class TestingHistory():
                 print(f"    {self.number_to_symbol[e].rjust(2)}       {mean_error_by_element[e]:3.3f}     {RMSE_by_element[e]:3.3f}")
 
         if log:
-            self.log_test(batch_number, epoch, batch_in_epoch, elapsed_time,
+            self.log_test(batch_number, epoch, batch_in_epoch, example_number, elapsed_time,
                     loss, mean_error_by_element, RMSE_by_element, residuals_by_element)
 
-    def log_test(self, batch_number, epoch, batch_in_epoch, elapsed_time,
+    def log_test(self, batch_number, epoch, batch_in_epoch, example_number, elapsed_time,
             loss, mean_error_by_element, RMSE_by_element, residuals_by_element=None):
         self.batch_number.append(batch_number)
         self.epoch.append(epoch)
         self.batch_in_epoch.append(batch_in_epoch)
+        self.example_number.append(example_number)
         self.elapsed_time.append(elapsed_time)
         self.loss.append(loss)
         self.mean_error_by_element.append(mean_error_by_element)
         self.RMSE_by_element.append(RMSE_by_element)
         if self.store_residuals:
             self.residuals_by_element = residuals_by_element
+
+    def loss_by_time(self, t, extrapolate=False):
+        i = bisect.bisect_right(self.elapsed_time, t)
+        if i==0 or i==len(self.elapsed_time):
+            raise ValueError
+        t1 = self.elapsed_time[i-1]
+        t2 = self.elapsed_time[i]
+        s = (t2 - t) / (t2 - t1)
+        return s * self.loss[i-1] + (1-s) * self.loss[i]
+
+    def loss_by_example(self, n, extrapolate=False):
+        # fill this in...
+        pass
+
+
 
     def __getstate__(self):
         d = self.__dict__.copy()
