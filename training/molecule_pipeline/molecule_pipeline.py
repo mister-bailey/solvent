@@ -17,13 +17,13 @@ class ExampleBatch():
         self.n_examples = n_examples
 
     # this is in-place!
-    def to(self, device):
-        self.pos = self.pos.to(device)
-        self.x = self.x.to(device)
-        self.y = self.y.to(device)
-        self.weights = self.weights.to(device)
-        self.edge_index = self.edge_index.to(device)
-        self.edge_attr = self.edge_attr.to(device)
+    def to(self, device, non_blocking=True):
+        self.pos = self.pos.to(device, non_blocking=non_blocking)
+        self.x = self.x.to(device, non_blocking=non_blocking)
+        self.y = self.y.to(device, non_blocking=non_blocking)
+        self.weights = self.weights.to(device, non_blocking=non_blocking)
+        self.edge_index = self.edge_index.to(device, non_blocking=non_blocking)
+        self.edge_attr = self.edge_attr.to(device, non_blocking=non_blocking)
         return self
 
     # this is in-place!

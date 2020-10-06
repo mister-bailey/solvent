@@ -9,6 +9,7 @@ import math
 import sys
 from datetime import timedelta
 from copy import copy
+from collections import deque
 if __name__ == '__main__': print("loading torch...")
 import torch
 from torch.multiprocessing import freeze_support
@@ -285,6 +286,7 @@ def main():
     pipeline.set_indices(training_shuffle)
 
     start_elapsed = history.elapsed_time()
+    data_queue = deque(maxlen=config.data.batch_preload)
 
     for epoch in range(start_epoch, start_epoch + n_epochs):
         print("                                                                                                ")
@@ -304,9 +306,12 @@ def main():
         pipeline.start_reading(training_size - start_example, batch_size=batch_size)
 
         # iterate through all training examples    
-        while pipeline.any_coming():
+        while pipeline.any_coming() or len(data_queue) > 0:
+
             time1 = time.time()
-            data = pipeline.get_batch()
+            while pipeline.any_coming() and len(data_queue) < config.data.batch_preload:
+                data = pipeline.get_batch().to(device)
+                data_queue.appendleft(data)
             t_wait = time.time()-time1
 
             #if epoch == start_epoch and batch_in_epoch == 1:
@@ -316,7 +321,7 @@ def main():
             #    print(data.pos)
 
 
-            batch_loss, train_time = train_batch(data, model, optimizer, device)
+            batch_loss, train_time = train_batch(data_queue, model, optimizer)#, device)
 
             # To keep training loss up to date with testing loss
             #if batch_in_epoch % testing_interval == 0 or batch_in_epoch == batches_per_epoch:

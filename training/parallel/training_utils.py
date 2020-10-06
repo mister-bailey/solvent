@@ -59,17 +59,19 @@ def loss_function(output, data):
     loss = loss.sum() / normalization
     return loss, residuals
 
+
 ### Training Code ###
 
 
 # train a single batch
-def train_batch(data, model, optimizer, device):
+def train_batch(data_queue, model, optimizer): #, device):
     # set model to training mode (for batchnorm)
     model.train()
 
     # forward pass
     time2 = time.time()
-    data = data.to(device)
+    #data = data.to(device)
+    data = data_queue.pop()
     output = model(data.x, data.edge_index, data.edge_attr)
     loss, _ = loss_function(output,data)
 
@@ -106,10 +108,10 @@ def batch_examples(example_list, batch_size):
         batch_list.append(batch)
     return batch_list
 
-from training_config import Config
-config = Config()
-symbol_to_number = config.symbol_to_number
-number_to_symbol = config.number_to_symbol
+#from training_config import Config
+#config = Config()
+#symbol_to_number = config.symbol_to_number
+#number_to_symbol = config.number_to_symbol
 
 def compare_models(model1, model2, data, tolerance=.01, copy_parameters=True):
     print("Comparing 2 models....")
