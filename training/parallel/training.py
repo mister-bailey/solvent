@@ -12,15 +12,16 @@ from copy import copy
 from collections import deque
 if __name__ == '__main__': print("loading torch...")
 import torch
-from torch.multiprocessing import freeze_support
+import torch.distributed as dist
+from torch.multiprocessing import freeze_support, spawn
 torch.set_default_dtype(torch.float64)
 import numpy as np
 if __name__ == '__main__': print("loading torch_geometric...")
 import torch_geometric as tg
 if __name__ == '__main__': print("loading e3nn...")
 import e3nn
-import e3nn.point.data_helpers as dh
-from e3nn.point.message_passing import Convolution
+#import e3nn.point.data_helpers as dh
+#from e3nn.point.message_passing import Convolution
 if __name__ == '__main__': print("loading training-specific libraries...")
 from pipeline import Pipeline, Molecule, test_data_neighbors, generate_index_shuffle, generate_multi_jiggles_set
 from training_utils import train_batch, batch_examples, save_checkpoint, cull_checkpoints, loss_function
@@ -50,6 +51,7 @@ def main():
 
     ### initialize GPU ###
     device = config.device
+    if device=="cuda": device = "cuda:0"
     print("\n=== GPU settings: ===\n")
     print(f"current cuda device: {torch.cuda.current_device()}")
     print(f"cuda device count:   {torch.cuda.device_count()}")
@@ -61,6 +63,13 @@ def main():
     temp_tensor = torch.rand(10).to(device)
     print("test tensor:")
     print(temp_tensor)
+    
+    if config.parallel and not dist.is_available():
+        print("Configured for distributed computing, but that's not available on this system!")
+        if not input("  Proceed with single GPU training? (y/n)").strip().lower() == 'y':
+            exit()
+        else:
+            config.parallel = False
 
     ### initialization ###
 
@@ -270,10 +279,37 @@ def main():
                 exit()
             resume = False
     if not resume:
-        history = TrainTestHistory(training_size, save_prefix, testing_batches,
-                               relevant_elements, device, config.number_to_symbol)
+        history = TrainTestHistory(training_size, batch_size, save_prefix, testing_batches,
+                               relevant_elements, device, config.number_to_symbol, sparse_logging=True)
         partial_epoch = False
         start_epoch = 1
+
+    preload = config.data.batch_preload
+    
+    if config.parallel: # and config.gpus > 1:
+        print(f"\n=== Setting up parallel training on {config.gpus} GPUs ===" )
+
+        #choose a big tensor to compare across processes for testing:
+        big_size = 0
+        big_key = None
+        for key, t in model.state_dict().items():
+            if t.numel() > big_size:
+                big_key = key
+                big_size = t.numel()
+        test_tensor = model.state_dict()[big_key].copy()
+
+        spawn(aux_train,
+                (pipeline, config.training.learning_rate, model_kwargs, model.state_dict(),
+                optimizer.state_dict(), preload, big_key),  config.gpus-1)
+        dist.init_process_group(backend="nccl", rank=0, group_name="train")
+        dist.barrier()
+        print("Main process 1")
+        dist.barrier()
+        print("Main process 2")
+            
+        
+        
+        
 
     ### training ###
     print("\n=== Training ===")
@@ -286,8 +322,8 @@ def main():
     pipeline.set_indices(training_shuffle)
 
     start_elapsed = history.elapsed_time()
-    data_queue = deque(maxlen=config.data.batch_preload)
 
+    data_queue = deque(maxlen=preload)
     for epoch in range(start_epoch, start_epoch + n_epochs):
         print("                                                                                                ")
         print(("Resuming" if partial_epoch else "Starting") + f" epoch {epoch}...", end="\r", flush=True)
@@ -299,6 +335,9 @@ def main():
             start_example = 0
             batch_in_epoch = 1
 
+        batch_of_last_test = (batch_in_epoch // testing_interval) * testing_interval
+        batch_of_last_save = (batch_in_epoch // save_interval) * save_interval
+
         # return to the start of the training set
         pipeline.scan_to(start_example)
 
@@ -309,37 +348,34 @@ def main():
         while pipeline.any_coming() or len(data_queue) > 0:
 
             time1 = time.time()
-            while pipeline.any_coming() and len(data_queue) < config.data.batch_preload:
+            while pipeline.any_coming() and len(data_queue) < preload:
                 data = pipeline.get_batch().to(device)
                 data_queue.appendleft(data)
             t_wait = time.time()-time1
 
-            #if epoch == start_epoch and batch_in_epoch == 1:
-            #    print("\nTesting positions:")
-            #    print(testing_batches[0].pos)
-            #    print("\nTraining positions:")
-            #    print(data.pos)
-
-
             batch_loss, train_time = train_batch(data_queue, model, optimizer)#, device)
-
-            # To keep training loss up to date with testing loss
-            #if batch_in_epoch % testing_interval == 0 or batch_in_epoch == batches_per_epoch:
-            #    model.eval()
-            #    with torch.no_grad():
-            #        data = data.to(device)
-            #        output = model(data.x, data.edge_index, data.edge_attr)
-            #        loss, _ = loss_function(output,data)
-            #    batch_loss = loss.sqrt().item()
             
-            history.train.log_batch(train_time, t_wait, data.n_examples, len(data.x), batch_loss, epoch=epoch)
+            example_number = pipeline.example_number
+            history.train.log_batch(train_time, t_wait, data.n_examples, len(data.x), example_number, batch_loss, epoch=epoch)
+            batch_in_epoch = math.ceil(example_number / batch_size)
 
-            if batch_in_epoch % testing_interval == 0 or not pipeline.any_coming():
+            if False and config.parallel and example_number < 1000:
+                print("\nTesting synchronization between GPUS ... ", end='')
+                dist.barrier()
+                dist.recv(test_tensor, src=1)
+                if test_tensor == model.state_dict()[big_key]:
+                    print("Success!")
+                else:
+                    print("Not synchronized!")
+
+            if batch_in_epoch - batch_of_last_test >= testing_interval or not pipeline.any_coming():
+                batch_of_last_test = batch_in_epoch
                 history.run_test(model)
 
             times_up = time_limit is not None and history.elapsed_time() - start_elapsed >= time_limit
 
-            if batch_in_epoch % save_interval == 0 or not pipeline.any_coming() or times_up:
+            if batch_in_epoch - save_interval >= save_interval or not pipeline.any_coming() or times_up:
+                batch_of_last_save = batch_in_epoch
                 checkpoint_filename = f"{save_prefix}-e{epoch:03d}_b{batch_in_epoch:05}-checkpoint.torch"
                 save_checkpoint(model_kwargs, model, checkpoint_filename, optimizer, all_elements)
                 history.save()
@@ -354,7 +390,6 @@ def main():
                 print("\nProgram complete.")
                 exit()
 
-            batch_in_epoch += 1
 
     # clean up
     print("                                                                                                 ")
@@ -363,6 +398,38 @@ def main():
     pipeline.close()
 
     print("\nProgram complete.")
+
+# auxiliary training processes (not the main one)
+def aux_train(rank, pipeline, learning_rate, model_kwargs, model_state_dict, optimizer_state_dict=None, preload=1, big_key=None):
+    rank += 1 # We already have a "main" process which should take rank 0
+        
+    device = f"cuda:{rank}"
+    dist.init_process_group(backend="nccl", rank=rank)#, group_name="train")
+    
+    dist.barrier()
+    print("Secondary process 1")
+    dist.barrier()
+    print("Secondary process 2")
+    dist.barrier()
+    print("Secondary process 3")
+    
+    #model = VariableParityNetwork(**model_kwargs)
+    #model.load_state_dict(model_state_dict)
+    #model.to(device)
+
+    #optimizer = torch.optim.Adam(model.parameters(), learning_rate)
+    #if optimizer_state_dict is not None:
+    #    optimizer.load_state_dict(optimizer_state_dict)
+    #optimizer.to(device)
+
+    #data_queue = deque(maxlen=preload)
+    #while True:
+    #    while pipeline.any_coming() and len(data_queue) < preload:
+    #        data = pipeline.get_batch().to(device)
+    #        data_queue.appendleft(data)0\
+
+    #    batch_loss, train_time = train_batch(data_queue, model, optimizer)#, device)
+
 
 if __name__ == '__main__':
     freeze_support()

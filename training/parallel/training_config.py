@@ -182,7 +182,22 @@ class Config:
         # device, all_elements, relevant_elements
         efunc = partial(parse_list, func=self.atomic_number)
         self.load_section_into_base('general', eval_funcs={
-            'all_elements':efunc, 'relevant_elements':efunc})
+            'all_elements':efunc, 'relevant_elements':efunc, 'gpus':eval, 'parallel':eval},
+            defaults={'device':'cuda', 'gpus':1, 'parallel':None})
+
+        if self.device == 'cpu':
+            self.parallel = False
+        if self.parallel is None:
+            self.parallel = (self.gpus != 1)
+        if self.parallel:
+            import torch.cuda
+            count = torch.cuda.device_count()
+            if self.gpus < 1:
+                self.gpus = int(self.gpus * count)
+            else:
+                self.gpus = min(self.gpus, count)
+        else:
+            self.gpus = 1
 
         # all elements
         assert len(self.all_elements) == len(set(self.all_elements)), "duplicate element"
@@ -242,6 +257,9 @@ class Config:
     # not "defining" parameters explicitly in this file. This function is not actually called.
     def _set_names(self):
         self.device = ""
+        self.gpus = 1
+        self.parallel = True
+
         self.all_elements = []
         self.relevant_elements = []
 
@@ -291,7 +309,7 @@ class Config:
         self.training.save_prefix = ""   # save checkpoints to files starting with this
         self.training.learning_rate = 0        # learning rate
         self.training.resume = False
-        self.training.num_checkpoints = 10
+        self.training.num_checkpoints = 1
 
         self.affine_correction = {}
 

@@ -120,24 +120,22 @@ def Rs_size(Rs):
 
 class Pipeline():
     def __init__(self, config, share_batches=True, manager=None, new_process=True):
-        if manager is None:
+        if new_process == True and manager is None:
             manager = Manager()
-        #self.manager = manager
         self.knows = Semaphore(0)  # > 0 if we know if any are coming
         # == 0 if DatasetReader is processing a command
         self.working = Semaphore(1 if new_process else 100)
         self.finished_reading = Lock()  # locked if we're still reading from file
         # number of molecules that have been sent to the pool
         self.in_pipe = Value('i', 0)
+        
+        # Tracking what's already been sent through the pipe:
+        self._example_number = Value('i', 0)
 
         self.command_queue = manager.Queue(10)
-        #self.molecule_queue = manager.Queue(max_size)
         self.molecule_pipeline = None
         self.batch_queue = manager.Queue(config.data.batch_queue_cap)
         self.share_batches = share_batches
-        # self.molecule_processor_pool = Pool(n_molecule_processors, process_molecule,
-        #                                    (self, max_radius, Rs_in, Rs_out))
-        #self.testing_molecules_dict = manager.dict()
 
         self.dataset_reader = DatasetReader("dataset_reader", self, config, new_process=new_process)
         if new_process:
@@ -181,6 +179,8 @@ class Pipeline():
         assert not self.any_coming(), "Tried to scan to index, but pipeline not empty!"
         self.working.acquire()
         self.command_queue.put(ScanTo(index))
+        with self._example_number.get_lock():
+            self._example_number.value = index
         # What to do if things are still in the pipe???
 
     def set_indices(self, test_set_indices):
@@ -202,7 +202,14 @@ class Pipeline():
             self.in_pipe.value -= x.n_examples
             if self.in_pipe.value == 0 and not check_semaphore(self.finished_reading):
                 set_semaphore(self.knows, False)
+        with self._example_number.get_lock():
+            self._example_number.value += x.n_examples
         return x
+
+    @property
+    def example_number(self):
+        with self._example_number.get_lock():
+            return self._example_number.value
 
     def close(self):
         self.dataset_reader.terminate()
