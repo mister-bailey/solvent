@@ -14,15 +14,17 @@ from pipeline import Molecule
 
 
 class TrainTestHistory:
-    def __init__(self, examples_per_epoch, examples_per_batch, save_prefix, testing_batches, relevant_elements,
-                 device, number_to_symbol=None, smoothing_window=10, store_residuals=False, sparse_logging=True):
+    def __init__(self, examples_per_epoch, examples_per_batch, testing_batches, relevant_elements, device,
+                 save_prefix, run_name, number_to_symbol=None, smoothing_window=10, store_residuals=False,
+                 sparse_logging=True, wandb_log=None):
         if sparse_logging:
-            self.train = SparseTrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window)
+            self.train = SparseTrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, wandb_log)
         else:
-            self.train = TrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window)
+            self.train = TrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, wandb_log)
         self.test = TestingHistory(examples_per_epoch, testing_batches, relevant_elements, device,
-                                  number_to_symbol=number_to_symbol, store_residuals=store_residuals)
+                                  number_to_symbol=number_to_symbol, store_residuals=store_residuals, wandb_log=wandb_log)
         self.save_prefix = save_prefix
+        self.name = run_name
     
     # save raw data
     def save(self, file=None):
@@ -33,12 +35,14 @@ class TrainTestHistory:
         print("Done.", end="\r", flush=True)
 
     @staticmethod
-    def load(testing_batches=[], file=None, prefix=None):
+    def load(testing_batches=[], file=None, prefix=None, wandb_log=None):
         if file is None:
             file = prefix + "-history.torch"
         h = torch.load(file)
         assert isinstance(h, TrainTestHistory), f"File {file} doesn't contain a train/test history!"
         h.test.testing_batches = testing_batches
+        h.test.wandb_log = wandb_log
+        h.train.wandb_log = wandb_log
         return h
 
     def plot(self, figure=None, x_axis='batch_number', y_axis='smoothed_loss'): # x_axis = 'time' is also allowed
@@ -87,11 +91,12 @@ class BaseHistory:
         
 
 class TrainingHistory(BaseHistory):
-    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10):
+    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, wandb_log=None):
         self.examples_per_epoch = examples_per_epoch
         self.examples_per_batch = examples_per_batch
         self.batches_per_epoch = math.ceil(examples_per_epoch / examples_per_batch)
         self.smoothing_window = smoothing_window
+        self.wandb_log = wandb_log
 
         # initialize the lists we will be accumulating
         # these lists correspond to each other
@@ -195,6 +200,12 @@ class TrainingHistory(BaseHistory):
         plt.plot(np.array(x_axis), np.array(y_axis), "ro-", label="train")
         if figure is None:
             plt.legend(loc="best")
+            
+    def __getstate__(self):
+        d = self.__dict__.copy()
+        del d['wandb_log']
+        return d
+
 
 
 class SparseTrainingHistory(TrainingHistory):
@@ -209,8 +220,8 @@ class SparseTrainingHistory(TrainingHistory):
     
     """    
     
-    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10):
-        super().__init__(examples_per_epoch, examples_per_batch, smoothing_window)
+    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, wandb_log=None):
+        super().__init__(examples_per_epoch, examples_per_batch, smoothing_window, wandb_log)
         
 
 
@@ -236,7 +247,17 @@ class SparseTrainingHistory(TrainingHistory):
         self.loss.append(loss)
         window = min(len(self.loss)-1, self.smoothing_window)
         self.smoothed_loss.append(sum(self.loss[-window:]) / window)
-        #print(f"batches_remaining: {self.batches_remaining_in_epoch()}")
+        
+        if self.wandb_log is not None:
+            self.wandb_log({
+                'elapsed_time':self.elapsed_time[-1],
+                'epoch':epoch,
+                'batch_in_epoch':batch_in_epoch,
+                'example_number':example_number,
+                'examples_in_batch':examples_in_batch,
+                'atoms_in_batch':atoms_in_batch,
+                'train_loss':loss,
+                'smoothed_train_loss':self.smoothed_loss[-1]})
 
         if verbose:
             print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batches_per_epoch}"
@@ -262,13 +283,14 @@ class TestingHistory(BaseHistory):
 
     # training_window_size: moving average for training_loss over this many minibatches
     def __init__(self, examples_per_epoch, testing_batches, relevant_elements, device,
-            number_to_symbol=None, store_residuals=False):
+            number_to_symbol=None, store_residuals=False, wandb_log=None):
         self.examples_per_epoch = examples_per_epoch
         self.testing_batches = testing_batches
         self.device = device
         self.relevant_elements = relevant_elements
         self.number_to_symbol = number_to_symbol if number_to_symbol else Config().number_to_symbol
         self.store_residuals = store_residuals
+        self.wandb_log = wandb_log
 
         # for each relevant element, gives you a list of atom indices in the testing set
         atom_indices = {e:[] for e in relevant_elements}
@@ -363,6 +385,17 @@ class TestingHistory(BaseHistory):
         self.RMSE_by_element.append(RMSE_by_element)
         if self.store_residuals:
             self.residuals_by_element = residuals_by_element
+            
+        if self.wandb_log is not None:
+            self.wandb_log({
+                'batch_number':batch_number,
+                'epoch':epoch,
+                'batch_in_epoch':batch_in_epoch,
+                'example_number':example_number,
+                'elapsed_time':elapsed_time,
+                'test_loss':loss,
+                'mean_error_by_element':mean_error_by_element,
+                'RMSE_by_element':RMSE_by_element})
 
     def loss_by_time(self, t, extrapolate=False):
         i = bisect.bisect_right(self.elapsed_time, t)
@@ -374,14 +407,21 @@ class TestingHistory(BaseHistory):
         return s * self.loss[i-1] + (1-s) * self.loss[i]
 
     def loss_by_example(self, n, extrapolate=False):
-        # fill this in...
-        pass
+        total_n = np.array(self.example_number) + self.examples_per_epoch * (np.array(self.epoch) - 1)
+        i = bisect.bisect_right(total_n, n)
+        if i==0 or i==len(total_n):
+            raise ValueError
+        n1 = total_n[i-1]
+        n2 = total_n[i]
+        s = (n2 - n) / (n2 - n1)
+        return s * self.loss[i-1] + (1-s) * self.loss[i]
 
 
 
     def __getstate__(self):
         d = self.__dict__.copy()
         del d['testing_batches']
+        del d['wandb_log']
         return d
 
 

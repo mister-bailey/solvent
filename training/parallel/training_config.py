@@ -239,6 +239,9 @@ class Config:
             self.data.connect_params = self.load_section('connect_params')._mapping
             self.data.SQL_fetch_size = self.data.sql_fetch_size
 
+        # wandb authentication
+        self.load_section('wandb')
+
         # model parameters
         self.load_section('model', eval_func=eval, eval_error=False)
         self.model.kwargs = self.model._mapping
@@ -250,12 +253,13 @@ class Config:
 
         # training parameters
         self.load_section('training', eval_func=eval, eval_funcs={'save_prefix':str, 'time_limit':str_to_secs},
-                defaults={'save_prefix':None, 'resume':False, 'n_epochs':None, 'time_limit':None})
+                defaults={'save_prefix':None, 'resume':False, 'n_epochs':None, 'time_limit':None, 'use_wandb':False})
 
 
     # The only purpose of this section is to get rid of the red squiggly lines from
     # not "defining" parameters explicitly in this file. This function is not actually called.
     def _set_names(self):
+        self.project = "Solvent"
         self.device = ""
         self.gpus = 1
         self.parallel = True
@@ -293,6 +297,10 @@ class Config:
         self.connect_params.user = ""
         self.connect_params.passwd = ""
         self.connect_params.db = ""
+        
+        self.wandb = SECTION()
+        self.wandb.user = ''
+        self.wandb.pswd = ''
 
         self.model = SECTION()
         self.model.kwargs = {}
@@ -310,6 +318,7 @@ class Config:
         self.training.learning_rate = 0        # learning rate
         self.training.resume = False
         self.training.num_checkpoints = 1
+        self.training.use_wandb = False
 
         self.affine_correction = {}
 

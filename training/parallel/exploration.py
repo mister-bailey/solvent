@@ -3,6 +3,7 @@ from configparser import ConfigParser
 import os
 import sys
 import subprocess
+import math
 from history import TrainTestHistory
 
 class TrainingRun:
@@ -111,6 +112,34 @@ class EnsembleOfRuns:
 
         # radial_h from 10 to 79
         model['radial_h'] = int( 5 * 2 ** (1 + 3 * next(var)) )
+        
+        # numlayers from 1 to 9
+        numlayers = int( 2 ** (3.32192 * next(var)))
+        
+        # lmax is a polynomial on [0,1], scaled to numlayers
+        # lmax = l0 + l1 x + l2 x^2 + l3 x^3
+        # l0 computed last to ensure positivity
+        l3 = math.asin(2 * next(var) - 1) * 2
+        l2 = math.asin(2 * next(var) - 1) * 2
+        l1 = math.asin(2 * next(var) - 1) * 2
+        
+        ns = [l / numlayers for l in range(numlayers)]
+        lmaxes = [int(round(l1 * n + l2 * n**2 + l3 * n**3)) for n in ns]
+        bump = -min(lmaxes)
+        lmin = int(next(var) * 4)
+        lmaxes = [l + bump + lmin for l in lmaxes]
+        
+        # multiplicities are a fn of both layer n / numlayers and x = 10/(l+5)
+        # m = m0 + m01 x + m10 n + m11 xn
+        m11 = math.asin(2 * next(var) - 1) * 5
+        m10 = math.asin(2 * next(var) - 1) * 5
+        m01 = math.asin(2 * next(var) - 1) * 5
+        
+        xs = [[10 / (l + 5) for l in range(lmaxes[n]+1)] for n in range(numlayers)]
+        muls = [[int(m01 * x + m10 * n + m11 * x * n) for x in xl] for n,xl in zip(ns,xs)]
+        bump = -min([min(lmul) for lmul in muls])
+        mulmin = int(next(var) * 4) + 1
+        muls = [[m + bump + mulmin for m in lmul] for lmul in muls]
 
         return settings
 
