@@ -1,47 +1,60 @@
-from pipeline import Pipeline, Molecule, test_data_neighbors, generate_index_shuffle, generate_multi_jiggles_set
+if __name__ == '__main__': print("Loading numpy...")
+import numpy as np
+if __name__ == '__main__': print("Loading torch...")
+import torch
+torch.set_default_dtype(torch.float64)
+if __name__ == '__main__': print("Loading torch.multiprocessing...")
+from torch.multiprocessing import freeze_support, spawn, Barrier
+if __name__ == '__main__': print("Loading torch.distributed...")
+import torch.distributed as dist
+if __name__ == '__main__': print("Loading e3nn...")
 import e3nn
 import torch_geometric as tg
-import torch
+if __name__ == '__main__': print("Loading time...")
 import time
 from collections.abc import Mapping
+if __name__ == '__main__': print("Loading sparse_kernel_conv...")
 from sparse_kernel_conv import SparseKernelConv, DummyConvolution
+if __name__ == '__main__': print("Loading laurent...")
 from laurent import LaurentPolynomial
+if __name__ == '__main__': print("Loading functools...")
 from functools import partial
+if __name__ == '__main__': print("Loading variable_networks...")
 from variable_networks import VariableParityNetwork
+if __name__ == '__main__': print("Loading diagnostics...")
 from diagnostics import print_parameter_size, count_parameters, get_object_size
+if __name__ == '__main__': print("Loading history...")
 from history import TrainTestHistory
-from training_utils import train_batch, batch_examples, save_checkpoint, cull_checkpoints, loss_function
-import numpy as np
-from torch.multiprocessing import freeze_support, spawn
-import torch.distributed as dist
+if __name__ == '__main__': print("Loading collections...")
 from collections import deque
+if __name__ == '__main__': print("Loading copy...")
 from copy import copy
+if __name__ == '__main__': print("Loading datetime...")
 from datetime import timedelta
+if __name__ == '__main__': print("Loading re...")
 import re
+if __name__ == '__main__': print("Loading sys...")
 import sys
+if __name__ == '__main__': print("Loading math...")
 import math
+if __name__ == '__main__': print("Loading os...")
 import os
+if __name__ == '__main__': print("Loading glob...")
 from glob import glob
+if __name__ == '__main__': print("Loading training_config...")
 from training_config import Config
+if __name__ == '__main__': print("Loading training_utils...")
+from training_utils import train_batch, batch_examples, save_checkpoint, cull_checkpoints, loss_function
+if __name__ == '__main__': print("Loading pipeline...", flush=True)
+from pipeline import Pipeline, Molecule, test_data_neighbors, generate_index_shuffle, generate_multi_jiggles_set
+
 if __name__ != '__main__':
     print("spawning process...")
-if __name__ == '__main__':
-    print("loading standard modules...")
-if __name__ == '__main__':
-    print("loading torch...")
-torch.set_default_dtype(torch.float64)
-if __name__ == '__main__':
-    print("loading torch_geometric...")
-if __name__ == '__main__':
-    print("loading e3nn...")
-#import e3nn.point.data_helpers as dh
-#from e3nn.point.message_passing import Convolution
-if __name__ == '__main__':
-    print("loading training-specific libraries...")
+
 if __name__ == '__main__':
     print("done loading modules.")
 
-if os.name == 'posix':
+if os.name == 'posix' and __name__ == '__main__':
     import resource
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
     print(
@@ -365,13 +378,29 @@ def main():
             if t.numel() > test_size:
                 test_key = key
                 test_size = t.numel()
+        test_tensor = model.state_dict()[test_key].clone().detach()
+            
+        #print("Attempting to spawn dummy_process(rank, 3)")
+        #spawn(dummy_process, (3,), 1)
+        #print("Spawned dummy_process")
+        
+        barrier = Barrier(config.gpus)
 
-        spawn(aux_train,
-              (pipeline, config.training.learning_rate, model_kwargs, model.state_dict(),
-               optimizer.state_dict(), preload, test_key),  config.gpus-1)
-        dist.init_process_group(backend="nccl", rank=0, group_name="train")
+        print("Attempting to spawn extra GPU worker processes...")
+        worker_pool = spawn(aux_train, (config.gpus, pipeline,
+                config.training.learning_rate, model_kwargs, model.state_dict(), optimizer.state_dict(),
+                preload, test_key),  config.gpus-1, join=False)
+        print(f"Spawned {config.gpus-1} extra processes.")
+                
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'  
+        print("Rank 0 initializing process group...")
+        dist.init_process_group(backend="nccl", rank=0, world_size=2) #, group_name="train")
+        print("Rank 0 entering first barrier...")
+        #barrier.wait()
         dist.barrier()
         print("Rank 0: first barrier passed")
+        #barrier.wait()
         dist.barrier()
         print("Rank 0: second barrier passed")
 
@@ -430,11 +459,12 @@ def main():
                 data.x), example_number, batch_loss, epoch=epoch)
             batch_in_epoch = math.ceil(example_number / batch_size)
 
-            if False and config.parallel and test_index < 10:
-                print("\nRank 0 receiving test params from  ... ", end='')
+            if config.parallel and test_index < 10:
+                print("\nRank 0 receiving test params from rank 1...", end='')
+                #barrier.wait()
                 dist.barrier()
                 dist.recv(test_tensor, src=1)
-                if test_tensor == model.state_dict()[big_key]:
+                if test_tensor == model.state_dict()[test_key]:
                     print("Success!")
                 else:
                     print("Not synchronized!")
@@ -475,49 +505,58 @@ def main():
 
 # auxiliary training processes (not the main one)
 
+def dummy_process(rank, n):
+    print(f"Dummy process. n = {n}")
 
-def aux_train(rank, pipeline, learning_rate, model_kwargs, model_state_dict, optimizer_state_dict=None, preload=1, test_key=None):
+
+def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_state_dict, optimizer_state_dict=None, preload=1, test_key=None):
     rank += 1  # We already have a "main" process which should take rank 0
-
-    device = f"cuda:{rank}"
-    dist.init_process_group(backend="nccl", rank=rank)  # , group_name="train")
     print(f"\nGPU rank {rank} reporting for duty!\n")
 
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    print(f"Rank {rank} intializing process group...")
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)#, group_name="train")
+    print(f"Rank {rank} initialized process group.")
+
+    device = f"cuda:{rank}"
+
+    print(f"Rank {rank} entering first barrier...")
+    #barrier.wait()
     dist.barrier()
     print(f"Rank {rank}: first barrier passed")
+    #barrier.wait()
     dist.barrier()
     print(f"Rank {rank}: second barrier passed")
     
     ###
-    return
+    #return
     ###
 
-    #model = VariableParityNetwork(**model_kwargs)
-    # model.load_state_dict(model_state_dict)
-    # model.to(device)
+    model = VariableParityNetwork(**model_kwargs)
+    model.load_state_dict(model_state_dict)
+    model.to(device)
 
-    #optimizer = torch.optim.Adam(model.parameters(), learning_rate)
-    # if optimizer_state_dict is not None:
-    #    optimizer.load_state_dict(optimizer_state_dict)
-    # optimizer.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), learning_rate)
+    if optimizer_state_dict is not None:
+        optimizer.load_state_dict(optimizer_state_dict)
 
     test_index = 0
 
-    #data_queue = deque(maxlen=preload)
-    # while True:
-    #    while pipeline.any_coming() and len(data_queue) < preload:
-    #        data = pipeline.get_batch().to(device)
-    #        data_queue.appendleft(data)0\
+    data_queue = deque(maxlen=preload)
+    while True:
+        while pipeline.any_coming() and len(data_queue) < preload:
+            data = pipeline.get_batch().to(device)
+            data_queue.appendleft(data)
 
-    #    batch_loss, train_time = train_batch(data_queue, model, optimizer)#, device)
+        batch_loss, train_time = train_batch(data_queue, model, optimizer)#, device)
 
         if test_index < 10:
             test_index += 1
             dist.barrier()
             if rank == 1:
-                print("\nRank 1 sending test params ... ")
-                
-                dist.send(test_tensor, dst=0)
+                print("\nRank 1 sending test params ... ")  
+                dist.send(model.state_dict()[test_key], dst=0)
 
     
 
