@@ -12,6 +12,7 @@ import torch_geometric as tg
 import e3nn
 import e3nn.point.data_helpers as dh
 import training_config
+import tensor_constraint
 from molecule_pipeline import ExampleBatch
 
 ### Code to Generate Molecules ###
@@ -49,14 +50,17 @@ def cull_checkpoints(save_prefix, number):
         os.remove(f)
 
 # mean-squared loss (not RMS!)
-def loss_function(output, data):
-    predictions = output
-    observations = data.y
+def loss_function(predictions, data, use_tensor_constraint=False):
+    if use_tensor_constraint:
+        observations = tensor_constraint.convert(data.y)
+    else:
+        observations = data.y
+    residuals = predictions - observations
     weights = data.weights
     normalization = weights.sum()
-    residuals = (predictions-observations)
-    loss = residuals.square() * weights
-    loss = loss.sum() / normalization
+    if use_tensor_constraint:
+        weights = weights.sum(dim=-1)
+    loss = (weights.t() @ residuals.square()) / normalization
     return loss, residuals
 
 

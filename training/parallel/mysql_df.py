@@ -9,6 +9,17 @@ def inflate(s, dtype=np.float64):
     s = re.sub('\[,', '[', s)
     return np.array(ast.literal_eval(s), dtype=dtype)
 
+def inflate_x(s):
+#    if s is None:
+#        return None
+#    if not re.search(",", s):
+#        s = re.sub('\s+', ',', s)
+#        s = re.sub('\[,', '[', s)
+    s = re.sub("array\(", "", s)
+    s = re.sub("\)", "", s)
+    return np.array(ast.literal_eval(s))
+
+
 class MysqlDB():
     """
     Represents an ``.db`` datafile.
@@ -81,13 +92,13 @@ class MysqlDB():
         con.close()
         return values
 
-    def read_rows(self, row_indices, check_status=True, randomize=True):
+    def read_rows(self, row_indices, check_status=True, randomize=True, get_tensors=False):
         """
         Returns list of tuples (id, data, weights, smiles).
         """
         con = pymysql.connect(**self.connect_params)
         with con.cursor() as cursor:
-            command = "select id, data, weights, gdb_id from data where "
+            command = f"select id, data, weights, gdb_id{', tensors' if get_tensors else ''} from data where "
             if check_status:
                 command += "status = 1 and weights is not null and "
             command += "id in (" + ",".join(map(str, row_indices)) + ")"
@@ -96,9 +107,21 @@ class MysqlDB():
             #f"select id, data, weights, gdb_id from data where status = 1 and weights is not null and id in ({','.join(['%s']*len(row_indices))})", row_indices
             result = cursor.execute(command)
             rows = cursor.fetchall()
-
         con.close()
-        return [(r[0], inflate(r[1]), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)]
+        
+        if get_tensors:
+            for i,r in enumerate(rows[:10]):
+                data = inflate(r[1])
+                weights = inflate(r[2])
+                tensors = inflate_x(r[4])
+                print(f"data[{r[0]}]: {list(data.shape)},  weights[{i}]: {list(weights.shape)},  tensors[{i}]: {list(tensors.shape)}")
+                #if i==0:
+                #    for a in tensors:
+                #        print("  ",a)
+            return [(r[0], np.concatenate((inflate(r[1]), inflate_x(r[4]).reshape((-1,9))), axis=1), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)] 
+        else:
+            return [(r[0], inflate(r[1]), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)]
+        
 
     def read_range(self, start_row, stop_row, check_status=True, randomize=True, limit=None):
         """

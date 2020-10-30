@@ -35,10 +35,10 @@ if __name__ == '__main__': print("Loading re...")
 import re
 if __name__ == '__main__': print("Loading sys...")
 import sys
-if __name__ == '__main__': print("Loading math...")
-import math
 if __name__ == '__main__': print("Loading os...")
 import os
+if __name__ == '__main__': print("Loading math...")
+import math
 if __name__ == '__main__': print("Loading glob...")
 from glob import glob
 if __name__ == '__main__': print("Loading training_config...")

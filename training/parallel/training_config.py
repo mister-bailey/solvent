@@ -239,21 +239,28 @@ class Config:
             self.data.connect_params = self.load_section('connect_params')._mapping
             self.data.SQL_fetch_size = self.data.sql_fetch_size
 
+        # training parameters
+        self.load_section('training', eval_func=eval,
+                eval_funcs={'save_prefix':str, 'time_limit':str_to_secs},
+                defaults={'save_prefix':None, 'resume':False, 'n_epochs':None, 'time_limit':None,
+                          'use_wandb':False, 'use_tensor_constraint':False})
+        
         # wandb authentication
-        self.load_section('wandb')
+        if self.training.use_wandb:
+            self.load_section('wandb')
 
         # model parameters
         self.load_section('model', eval_func=eval, eval_error=False)
         self.model.kwargs = self.model._mapping
         self.model.Rs_in = [ (self.n_elements, 0, 1) ]  # n_features, rank 0 tensor, even parity
-        self.model.Rs_out = [ (1,0,1) ]            # one output per atom, rank 0 tensor, even parity
+        if self.training.use_tensor_constraint:
+            import tensor_constraint
+            self.model.Rs_out = tensor_constraint.Rs_out
+        else:
+            self.model.Rs_out = [ (1,0,1) ]            # one output per atom, rank 0 tensor, even parity
         self.model.kwargs['Rs_in'] = self.model.Rs_in
         self.model.kwargs['Rs_out'] = self.model.Rs_out
         self.max_radius = self.model.max_radius
-
-        # training parameters
-        self.load_section('training', eval_func=eval, eval_funcs={'save_prefix':str, 'time_limit':str_to_secs},
-                defaults={'save_prefix':None, 'resume':False, 'n_epochs':None, 'time_limit':None, 'use_wandb':False})
 
 
     # The only purpose of this section is to get rid of the red squiggly lines from
@@ -319,6 +326,7 @@ class Config:
         self.training.resume = False
         self.training.num_checkpoints = 1
         self.training.use_wandb = False
+        self.training.use_tensor_constraint = False
 
         self.affine_correction = {}
 
