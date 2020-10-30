@@ -33,14 +33,9 @@ class Molecule():
         self.n_atoms = len(atomic_numbers)
         # (n_examples, n_atoms, 3)
         self.perturbed_geometries = perturbed_geometries
-
-        # zero out shieldings for irrelevant atoms
-        # for i,a in enumerate(atomic_numbers):
-        #    #if isinstance(a, str): a = symbol_to_number[a]
-        #    if a not in training_config.relevant_elements:
-        #        perturbed_shieldings[...,i]=0.0  # (n_examples, n_atoms, 1)
-        # (n_atoms, n_elements)
         self.perturbed_shieldings = perturbed_shieldings
+        #print(self.perturbed_shieldings.shape)   
+
         self.features = Molecule.get_one_hots(atomic_numbers)
         if weights is None:
             self.weights = Molecule.get_weights(
@@ -329,8 +324,11 @@ class DatasetReader(Process):
         self.requested_jiggles = requested_jiggles  # how many jiggles per file
         #self.testing_molecules_dict = testing_molecules_dict   # ID -> Molecule
         self.molecule_pipeline = None
-        self.molecule_pipeline_args = (config.training.batch_size, config.max_radius, config.all_elements,
-                                       config.relevant_elements, config.data.n_molecule_processors,
+        self.use_tensor_constraint = config.training.use_tensor_constraint
+        feature_size = len(config.all_elements)
+        output_size = 10 if self.use_tensor_constraint else 1
+        self.molecule_pipeline_args = (config.training.batch_size, config.max_radius, feature_size,
+                                       output_size, config.data.n_molecule_processors,
                                        config.data.molecule_queue_cap, config.data.example_queue_cap,
                                        config.data.batch_queue_cap, config.affine_correction)
         #print(f"molecule_pipeline_args = {self.molecule_pipeline_args}")
@@ -460,7 +458,7 @@ class DatasetReader(Process):
                 if make_molecules:
                     if examples_read == examples_to_read:
                         break
-                    molecule = Molecule(ID, str(smiles), data[:, 1:4], data[:, 4],
+                    molecule = Molecule(ID, str(smiles), data[:, 1:4], data[:, 4:],
                                         data[:, 0].astype(np.int32), weights=weights)
                     #print(f"# ID: {molecule.ID}")
                     self.pipeline.put_molecule_to_ext(molecule)
@@ -474,7 +472,7 @@ class DatasetReader(Process):
             if len(self.molecule_buffer) < self.SQL_fetch_size and self.index_pos < len(self.indices):
                 self.molecule_buffer += self.database.read_rows(np.nditer(
                     self.indices[self.index_pos : self.index_pos + self.SQL_fetch_size]),
-                    randomize = self.shuffle_incoming)
+                    randomize = self.shuffle_incoming, get_tensors=self.use_tensor_constraint)
                 self.index_pos += self.SQL_fetch_size
 
         return examples_read
