@@ -298,6 +298,41 @@ def main():
     time2 = time.time()
     print(f"Done preprocessing testing data.  That took {time2-time1:.3f} s.\n")
 
+    preload = config.data.batch_preload
+    dist_batch_size = batch_size
+    if config.parallel:  # and config.gpus > 1:
+        config.gpus = min(config.gpus, torch.cuda.device_count())
+        print(f"\n === Setting up parallel training on {config.gpus} GPUs ===")
+
+        # choose a big tensor to compare across processes for testing:
+        test_key = None
+        test_distrib = False
+        if test_distrib:
+            test_size = 0
+            for key, tensor in model.state_dict().items():
+                if tensor.numel() > test_size:
+                    test_key = key
+                    test_size = tensor.numel()
+            test_tensor = model.state_dict()[test_key].clone().detach()
+            test_key = 'module.' + test_key # wrapped in DistributedDataParallel
+            print(f"Using model.state_dict()['{test_key}'] for inter-GPU testing.'")
+            
+        print(f"Spawning {config.gpus-1} extra processes...", flush=True)
+        worker_pool = mp.spawn(aux_train, (config.gpus, pipeline,
+                config.training.learning_rate, model_kwargs, None, #model.state_dict(),
+                optimizer.state_dict(), preload, test_key),  config.gpus-1, join=False)
+                
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'  
+        print("Initializing process group...")
+        dist.init_process_group(backend="nccl", rank=0, world_size=config.gpus) 
+        print("Building DistributedDataParallel model... ", flush=True)
+        torch.cuda.set_device(0)
+        model = DistributedDataParallel(model, device_ids=[0], output_device=0)
+        dist.barrier()
+        dist_batch_size = round(batch_size / config.gpus)
+        batch_size = dist_batch_size * config.gpus
+
     ## test/train history ##
     print("\n === Setting up logging and testing ===")
 
@@ -345,11 +380,11 @@ def main():
             history = TrainTestHistory.load(
                 testing_batches, prefix=save_prefix, wandb_log=wandb_log)
             start_epoch = history.train.current_epoch()
-            start_example = history.train.example_in_epoch()
+            example_number = history.train.example_in_epoch()
             batch_in_epoch = history.train.next_batch_in_epoch()
             print("Resuming from prior training...")
             print(f"     start_epoch = {start_epoch}")
-            print(f"   start_example = {start_example}")
+            print(f"   start_example = {example_number}")
             print(f"  batch_in_epoch = {batch_in_epoch}")
             partial_epoch = True
         except Exception as e:
@@ -366,46 +401,6 @@ def main():
                                    sparse_logging=True, wandb_log=wandb_log)
         partial_epoch = False
         start_epoch = 1
-
-    preload = config.data.batch_preload
-
-    if config.parallel:  # and config.gpus > 1:
-        config.gpus = min(config.gpus, torch.cuda.device_count())
-        print(f"\n=== Setting up parallel training on {config.gpus} GPUs ===")
-
-        # choose a big tensor to compare across processes for testing:
-        test_size = 0
-        test_key = None
-        for key, t in model.state_dict().items():
-            if t.numel() > test_size:
-                test_key = key
-                test_size = t.numel()
-        test_tensor = model.state_dict()[test_key].clone().detach()
-        print(f"Using model['{test_key}'] for inter-GPU testing.'")
-            
-        #barrier = Barrier(config.gpus)
-
-        print("Attempting to spawn extra GPU worker processes...")
-        worker_pool = mp.spawn(aux_train, (config.gpus, pipeline,
-                config.training.learning_rate, model_kwargs, None, #model.state_dict(),
-                optimizer.state_dict(), preload, test_key),  config.gpus-1, join=False)
-        print(f"Spawned {config.gpus-1} extra processes.")
-                
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'  
-        print("Rank 0 initializing process group...")
-        dist.init_process_group(backend="nccl", rank=0, world_size=2) #, group_name="train")
-        print("Rank 0: entering first barrier...")
-        #barrier.wait()
-        dist.barrier()
-        print("Rank 0: first barrier passed.")
-        print("Building DistributedDataParallel model... ", end='')
-        torch.cuda.set_device(0)
-        model = DistributedDataParallel(model, device_ids=[0], output_device=0)
-        print("Done.")
-        print("Rank 0: entering second barrier...")
-        dist.barrier()
-        print("Rank 0: second barrier passed.")
 
     ### training ###
     print("\n=== Training ===")
@@ -431,7 +426,7 @@ def main():
         if partial_epoch:
             partial_epoch = False
         else:
-            start_example = 0
+            example_number = 0
             batch_in_epoch = 1
 
         batch_of_last_test = (
@@ -439,44 +434,46 @@ def main():
         batch_of_last_save = (batch_in_epoch // save_interval) * save_interval
 
         # return to the start of the training set
-        pipeline.scan_to(start_example)
+        pipeline.scan_to(example_number)
 
         # process the training examples
         pipeline.start_reading(
-            training_size - start_example, batch_size=batch_size)
+            training_size - example_number, batch_size=dist_batch_size)
 
         # iterate through all training examples
         while pipeline.any_coming() or len(data_queue) > 0:
 
-            print("Getting batches from pipeline... ")
+            #print("Getting batches from pipeline... ")
             time1 = time.time()
             while len(data_queue) < preload and pipeline.any_coming():
-                print("Loading batch... ", end='', flush=True)
+                #print("Loading batch... ", end='', flush=True)
                 data = pipeline.get_batch().to(device)
                 data_queue.appendleft(data)
-                print("Done", flush=True)
+                #print("Done", flush=True)
             t_wait = time.time()-time1
 
-            print("Training batch... ", end='', flush=True)
-            batch_loss, train_time = train_batch(
-                data_queue, model, optimizer)#, True)
-            print("Done.", flush=True)
+            time1 = time.time()
+            batch_loss = train_batch(
+                data_queue, model, optimizer)
+            train_time = time.time() - time1
 
-            print("Logging batch... ", end='', flush=True)
-            example_number = pipeline.example_number
+            example_number = min(example_number + batch_size, training_size)
+            batch_in_epoch += 1
+            
             history.train.log_batch(train_time, t_wait, data.n_examples, len(
                 data.x), example_number, batch_loss, epoch=epoch)
-            batch_in_epoch = math.ceil(example_number / batch_size)
-            print("Done.", flush=True)
 
             if config.parallel and test_key is not None and test_index < 10:
                 test_rank = (test_index % (config.gpus-1)) + 1
                 test_index += 1
-                print(f"\nRank 0: receiving test params from rank {test_rank}...", flush=True)
-                #barrier.wait()
                 dist.barrier()
-                dist.recv(test_tensor, src=test_rank)
-                if test_tensor == model.state_dict()[test_key]:
+                print(f"\n[0]: receiving test params from rank {test_rank}...", flush=True)
+                dist.broadcast(test_tensor, src=test_rank)
+                #print(f"model.state_dict() keys:")
+                #for key in model.state_dict().keys():
+                #    print(f"   {key}", flush=True)
+                #input("*** Press Enter to continue *** ")
+                if torch.equal(test_tensor, model.state_dict()[test_key]):
                     print("  Model is synchronized!", flush=True)
                 else:
                     print("  Not synchronized!", flush=True)
@@ -516,27 +513,16 @@ def main():
     print("\nProgram complete.")
 
 # auxiliary training processes (not the main one)
-
-def dummy_process(rank, n):
-    print(f"Dummy process. n = {n}")
-
-
 def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_state_dict=None, optimizer_state_dict=None, preload=1, test_key=None):
     rank += 1  # We already have a "main" process which should take rank 0
     print(f"\nGPU rank {rank} reporting for duty!\n")
 
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    print(f"Rank {rank} intializing process group...")
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)#, group_name="train")
-    print(f"Rank {rank} initialized process group.")
 
     device = f"cuda:{rank}"
     torch.cuda.set_device(rank)
-
-    print(f"Rank {rank} entering first barrier...")
-    dist.barrier()
-    print(f"Rank {rank}: first barrier passed")
 
     model = VariableParityNetwork(**model_kwargs)
     if model_state_dict is not None:
@@ -545,28 +531,27 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
     model = DistributedDataParallel(model, device_ids=[rank], output_device=rank)
 
     dist.barrier()
-    print(f"Rank {rank}: second barrier passed")
     
     optimizer = torch.optim.Adam(model.parameters(), learning_rate)
     if optimizer_state_dict is not None:
         optimizer.load_state_dict(optimizer_state_dict)
 
     test_index = 0
-    verbose = True
+    verbose = False
     
     if verbose: print(f"[{rank}]: pipeline.batch_queue = {pipeline.batch_queue}", flush=True)
 
     data_queue = deque(maxlen=preload)
     while True:
         if verbose: print(f"[{rank}]: Starting train loop...", flush=True)
-        if verbose: print(f"[{rank}]: Querying pipeline... ", end='', flush=True)
-        any_coming = pipeline.any_coming()
-        if verbose: print(f"Done. ", flush=True)
+        #if verbose: print(f"[{rank}]: Querying pipeline... ", end='', flush=True)
+        #any_coming = pipeline.any_coming()
+        #if verbose: print(f"Done. ", flush=True)
         while (len(data_queue) < preload and pipeline.any_coming()) or len(data_queue)==0:
-            if verbose: print(f"[{rank}]: Getting batch... ", end='', flush=True)
-            data = pipeline.get_batch(verbose=True).to(device)
+            #if verbose: print(f"[{rank}]: Getting batch... ", end='', flush=True)
+            data = pipeline.get_batch().to(device)
             data_queue.appendleft(data)
-            if verbose: print("Done.", flush=True)
+            #if verbose: print("Done.", flush=True)
 
         if verbose: print(f"[{rank}]: Training batch...", flush=True)
         batch_loss, train_time = train_batch(data_queue, model, optimizer, verbose)
@@ -576,9 +561,8 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
             test_rank = (test_index % (world_size-1)) + 1
             test_index += 1
             dist.barrier()
-            if rank == test_rank:
-                print(f"\nRank {rank}: sending test params ... ", flush=True)  
-                dist.send(model.state_dict()[test_key], dst=0)
+            if verbose and test_rank == rank: print(f"\n[{rank}]: sending test params ... ", flush=True)  
+            dist.broadcast(model.state_dict()[test_key], src=test_rank)
 
     
 

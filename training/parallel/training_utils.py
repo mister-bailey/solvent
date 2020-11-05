@@ -68,34 +68,22 @@ def loss_function(predictions, data, use_tensor_constraint=False):
 
 
 # train a single batch
-def train_batch(data_queue, model, optimizer, verbose = False):
+def train_batch(data_queue, model, optimizer):
     # set model to training mode (for batchnorm)
     model.train()
 
-    # forward pass
-    time2 = time.time()
     #data = data.to(device)
     data = data_queue.pop()
-    if verbose: print("Running forward pass... ", end='', flush=True)
     output = model(data.x, data.edge_index, data.edge_attr)
-    if verbose: print("Done.", flush=True)
-    if verbose: print("Computing loss function... ", end='', flush=True)
     loss, _ = loss_function(output,data)
-    if verbose: print("Done.", flush=True)
 
     # backward pass
-    if verbose: print("Running backward pass... ", end='', flush=True)
     optimizer.zero_grad()
     loss.backward()
-    if verbose: print("Done.", flush=True)
-    if verbose: print("Taking optimizer step... ", end='', flush=True)
     optimizer.step()
-    if verbose: print("Done.", flush=True)
 
-    # update results
-    batch_loss = np.sqrt(loss.item())  # RMSE
-    training_time = time.time() - time2
-    return batch_loss, training_time
+    # update results 
+    return np.sqrt(loss.item())  # RMSE
 
 # Collect list of examples into batches (slow, so only use for testing dataset)
 # returns a list of batches, where the returned batches each have an extra field: example_list

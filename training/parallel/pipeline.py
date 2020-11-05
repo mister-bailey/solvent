@@ -185,22 +185,14 @@ class Pipeline():
         self.command_queue.put(ScanTo(0))
 
 
-    def any_coming(self, verbose=False):  # returns True if at least one example is coming
-        if verbose: print(f"any_coming: waiting for self.knows (current value = ", end='', flush=True)
-        if verbose: print(f"{check_semaphore(self.knows)})... ", end='', flush=True)
+    def any_coming(self):  # returns True if at least one example is coming
         wait_semaphore(self.knows)
-        if verbose: print("Done.", flush=True)
-        if verbose: print("Acuiring self.in_pipe lock... ", end='', flush=True)
         with self.in_pipe.get_lock():
-            if verbose: print(f"Done. Returning value {self.in_pipe.value > 0}...", flush=True)
             return self.in_pipe.value > 0
 
-    def get_batch(self, timeout=None, verbose=False):
-        if verbose: print("Getting batch!", flush=True)
+    def get_batch(self, timeout=None):
         #assert self.any_coming(verbose=verbose), "Tried to get data from an empty pipeline!"
-        if verbose: print("Getting from self.batch_queue...", flush=True)
         x = self.batch_queue.get(True, timeout)
-        if verbose: print("  Gotten!", flush=True)
         with self.in_pipe.get_lock():
             self.in_pipe.value -= x.n_examples
             if self.in_pipe.value == 0 and not check_semaphore(self.finished_reading):
