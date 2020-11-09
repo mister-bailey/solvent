@@ -434,9 +434,11 @@ def main():
         batch_of_last_save = (batch_in_epoch // save_interval) * save_interval
 
         # return to the start of the training set
+        #print("Scanning to start of training set...")
         pipeline.scan_to(example_number)
 
         # process the training examples
+        #print("Starting read into pipeline...")
         pipeline.start_reading(
             training_size - example_number, batch_size=dist_batch_size)
 
@@ -452,14 +454,15 @@ def main():
                 #print("Done", flush=True)
             t_wait = time.time()-time1
 
+            #print("Training batch...")
             time1 = time.time()
-            batch_loss = train_batch(
-                data_queue, model, optimizer)
+            batch_loss = train_batch(data_queue, model, optimizer)
             train_time = time.time() - time1
 
             example_number = min(example_number + batch_size, training_size)
             batch_in_epoch += 1
             
+            #print("Logging batch...")
             history.train.log_batch(train_time, t_wait, data.n_examples, len(
                 data.x), example_number, batch_loss, epoch=epoch)
 
@@ -537,7 +540,7 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
         optimizer.load_state_dict(optimizer_state_dict)
 
     test_index = 0
-    verbose = False
+    verbose = False #True if rank==1 else False
     
     if verbose: print(f"[{rank}]: pipeline.batch_queue = {pipeline.batch_queue}", flush=True)
 
@@ -547,14 +550,17 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
         #if verbose: print(f"[{rank}]: Querying pipeline... ", end='', flush=True)
         #any_coming = pipeline.any_coming()
         #if verbose: print(f"Done. ", flush=True)
+        time1 = time.time()
         while (len(data_queue) < preload and pipeline.any_coming()) or len(data_queue)==0:
-            #if verbose: print(f"[{rank}]: Getting batch... ", end='', flush=True)
+            if verbose: print(f"[{rank}]: Getting batch... ", end='', flush=True)
             data = pipeline.get_batch().to(device)
             data_queue.appendleft(data)
-            #if verbose: print("Done.", flush=True)
+            if verbose: print("Done.", flush=True)
+        wait_time = time.time() - time1
+        if verbose: print(f"[{rank}]: wait time = {wait_time:.2f}", flush=True)
 
         if verbose: print(f"[{rank}]: Training batch...", flush=True)
-        batch_loss, train_time = train_batch(data_queue, model, optimizer, verbose)
+        batch_loss = train_batch(data_queue, model, optimizer)
         if verbose: print(f"[{rank}]: Finished training batch.", flush=True)
 
         if test_key is not None and test_index < 10:
