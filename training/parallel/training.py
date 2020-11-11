@@ -559,7 +559,7 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
         if verbose: print(f"[{rank}]: wait time = {wait_time:.2f}", flush=True)
 
         if verbose: print(f"[{rank}]: Training batch...", flush=True)
-        batch_loss = train_batch(data_queue, model, optimizer)
+        _ = train_batch(data_queue, model, optimizer)
         if verbose: print(f"[{rank}]: Finished training batch.", flush=True)
 
         if test_key is not None and test_index < 10:

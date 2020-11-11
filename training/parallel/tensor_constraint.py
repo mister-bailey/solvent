@@ -13,5 +13,6 @@ conversion[1:9,1:10] = Q[1:9]
 c_t = conversion.t()
 
 def convert(data):
-    c_t.to(data.device)
+    global c_t
+    c_t = c_t.to(data.device)
     return data @ c_t

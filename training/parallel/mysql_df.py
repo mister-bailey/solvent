@@ -119,7 +119,13 @@ class MysqlDB():
                     #if i==0:
                     #    for a in tensors:
                     #        print("  ",a)
-            return [(r[0], np.concatenate((inflate(r[1]), inflate_x(r[4]).reshape((-1,9))), axis=1), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)] 
+            value = []
+            for r in rows:
+                r1, r4 = inflate(r[1]), inflate_x(r[4])
+                if r1.shape[0] == r4.shape[0]:
+                    value.append((r[0], np.concatenate((r1, r4.reshape((-1,9))), axis=1), inflate(r[2]), r[3]))
+            return value
+            #return [(r[0], np.concatenate((inflate(r[1]), inflate_x(r[4]).reshape((-1,9))), axis=1), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)] 
         else:
             return [(r[0], inflate(r[1]), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)]
         
