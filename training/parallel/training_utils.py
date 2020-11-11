@@ -58,32 +58,39 @@ def loss_function(predictions, data, use_tensor_constraint=False):
     residuals = predictions - observations
     weights = data.weights
     normalization = weights.sum()
-    if use_tensor_constraint:
-        weights = weights.sum(dim=-1)
     loss = (weights.t() @ residuals.square()) / normalization
-    return loss, residuals
+    
+    if use_tensor_constraint:
+        return loss[1:10].sum(), loss[0], residuals
+    else:
+        return loss, residuals
 
 
 ### Training Code ###
 
 
 # train a single batch
-def train_batch(data_queue, model, optimizer):
+def train_batch(data_queue, model, optimizer, use_tensor_constraint=False):
     # set model to training mode (for batchnorm)
     model.train()
 
     #data = data.to(device)
     data = data_queue.pop()
     output = model(data.x, data.edge_index, data.edge_attr)
-    loss, _ = loss_function(output,data)
+    loss, *other_losses, _ = loss_function(output, data, use_tensor_constraint=use_tensor_constraint)
+    if use_tensor_constraint:
+        scalar_loss = other_losses[0]
 
     # backward pass
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-    # update results 
-    return np.sqrt(loss.item())  # RMSE
+    # return RMSE
+    if use_tensor_constraint:
+        return np.sqrt(loss.item()), np.sqrt(scalar_loss.item())
+    else:
+        return (np.sqrt(loss.item()),)
 
 # Collect list of examples into batches (slow, so only use for testing dataset)
 # returns a list of batches, where the returned batches each have an extra field: example_list

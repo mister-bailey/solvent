@@ -92,7 +92,7 @@ class MysqlDB():
         con.close()
         return values
 
-    def read_rows(self, row_indices, check_status=True, randomize=True, get_tensors=False):
+    def read_rows(self, row_indices, check_status=True, randomize=True, get_tensors=False, debug_tensors=False):
         """
         Returns list of tuples (id, data, weights, smiles).
         """
@@ -110,14 +110,15 @@ class MysqlDB():
         con.close()
         
         if get_tensors:
-            for i,r in enumerate(rows[:10]):
-                data = inflate(r[1])
-                weights = inflate(r[2])
-                tensors = inflate_x(r[4])
-                print(f"data[{r[0]}]: {list(data.shape)},  weights[{i}]: {list(weights.shape)},  tensors[{i}]: {list(tensors.shape)}")
-                #if i==0:
-                #    for a in tensors:
-                #        print("  ",a)
+            if debug_tensors:
+                for i,r in enumerate(rows[:10]):
+                    data = inflate(r[1])
+                    weights = inflate(r[2])
+                    tensors = inflate_x(r[4])
+                    print(f"data[{r[0]}]: {list(data.shape)},  weights[.]: {list(weights.shape)},  tensors[.]: {list(tensors.shape)}")
+                    #if i==0:
+                    #    for a in tensors:
+                    #        print("  ",a)
             return [(r[0], np.concatenate((inflate(r[1]), inflate_x(r[4]).reshape((-1,9))), axis=1), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)] 
         else:
             return [(r[0], inflate(r[1]), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)]

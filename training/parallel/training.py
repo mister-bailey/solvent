@@ -57,6 +57,7 @@ if __name__ == '__main__':
     print("done loading modules.")
 
 if os.name == 'posix' and __name__ == '__main__':
+    mp.set_start_method('spawn')
     import resource
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
     print(
@@ -283,7 +284,8 @@ def main():
             print(e)
             exit()
         testing_examples.append(example)
-        # if len(testing_examples) <= 5:
+        if len(testing_examples) <= 5:
+            print(f"batch.y : {list(example.y.shape)}")
         #    print(f"ID = {example.ID}")
         #    in_out = torch.cat((Molecule.get_atomic_numbers(example.x).unsqueeze(1), example.y), 1)
         #    for a in in_out:
@@ -409,6 +411,7 @@ def main():
     testing_interval = config.training.testing_interval
     save_interval = config.training.save_interval
     num_checkpoints = config.training.num_checkpoints
+    use_tensor_constraint = config.training.use_tensor_constraint
 
     pipeline.set_indices(training_shuffle)
 
@@ -456,7 +459,7 @@ def main():
 
             #print("Training batch...")
             time1 = time.time()
-            batch_loss = train_batch(data_queue, model, optimizer)
+            train_losses = train_batch(data_queue, model, optimizer, use_tensor_constraint=use_tensor_constraint)
             train_time = time.time() - time1
 
             example_number = min(example_number + batch_size, training_size)
@@ -464,7 +467,7 @@ def main():
             
             #print("Logging batch...")
             history.train.log_batch(train_time, t_wait, data.n_examples, len(
-                data.x), example_number, batch_loss, epoch=epoch)
+                data.x), example_number, *train_losses, epoch=epoch)
 
             if config.parallel and test_key is not None and test_index < 10:
                 test_rank = (test_index % (config.gpus-1)) + 1
@@ -472,10 +475,6 @@ def main():
                 dist.barrier()
                 print(f"\n[0]: receiving test params from rank {test_rank}...", flush=True)
                 dist.broadcast(test_tensor, src=test_rank)
-                #print(f"model.state_dict() keys:")
-                #for key in model.state_dict().keys():
-                #    print(f"   {key}", flush=True)
-                #input("*** Press Enter to continue *** ")
                 if torch.equal(test_tensor, model.state_dict()[test_key]):
                     print("  Model is synchronized!", flush=True)
                 else:
@@ -575,5 +574,4 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
 
 if __name__ == '__main__':
     mp.freeze_support()
-    mp.set_start_method('spawn')
     main()

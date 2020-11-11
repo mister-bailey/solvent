@@ -226,7 +226,7 @@ class SparseTrainingHistory(TrainingHistory):
 
 
     def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, example_number,
-                  loss, epoch=None, batch_in_epoch=None, verbose=True):
+                  loss, scalar_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
         self.elapsed_time.append(self.elapsed_time[-1] + batch_time) # worry about this with sparse logging
         # we don't assume example_number is within batch or over all batches
         example_number = example_number % self.examples_per_epoch
@@ -260,9 +260,10 @@ class SparseTrainingHistory(TrainingHistory):
                 'smoothed_train_loss':self.smoothed_loss[-1]})
 
         if verbose:
-            print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batches_per_epoch}"
-                  f"  train_loss = {self.smoothed_loss[-1]:10.3f}  t_train = {batch_time:.2f} s"
-                  f"  t_wait = {wait_time:.2f} s  t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
+            print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batches_per_epoch}  "
+                  f"train_loss = {self.smoothed_loss[-1]:10.3f}  " + 
+                  ("" if scalar_loss is None else f"scalar_loss = {scalar_loss:10.3f}") +
+                  f"  t_train = {batch_time:.2f} s  t_wait = {wait_time:.2f} s  t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
                    end="\r", flush=True)
 
     def num_batches(self):
@@ -341,7 +342,7 @@ class TestingHistory(BaseHistory):
             for i, batch in enumerate(self.testing_batches):
                 if verbose: print(f"Testing batches...  {i:3} / {len(self.testing_batches)}   ", end="\r", flush=True)
                 batch.to(self.device)
-                loss, chunk = loss_function(model(batch.x, batch.edge_index, batch.edge_attr), batch)
+                *_, loss, chunk = loss_function(model(batch.x, batch.edge_index, batch.edge_attr), batch)
                 losses.append(loss)
                 residual_chunks.append(chunk)
 
