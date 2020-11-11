@@ -92,7 +92,7 @@ class MysqlDB():
         con.close()
         return values
 
-    def read_rows(self, row_indices, check_status=True, randomize=True, get_tensors=False, debug_tensors=False):
+    def read_rows(self, row_indices, randomize=True, get_tensors=False, check_status=False, debug_tensors=False):
         """
         Returns list of tuples (id, data, weights, smiles).
         """
@@ -116,16 +116,13 @@ class MysqlDB():
                     weights = inflate(r[2])
                     tensors = inflate_x(r[4])
                     print(f"data[{r[0]}]: {list(data.shape)},  weights[.]: {list(weights.shape)},  tensors[.]: {list(tensors.shape)}")
-                    #if i==0:
-                    #    for a in tensors:
-                    #        print("  ",a)
-            value = []
-            for r in rows:
-                r1, r4 = inflate(r[1]), inflate_x(r[4])
-                if r1.shape[0] == r4.shape[0]:
-                    value.append((r[0], np.concatenate((r1, r4.reshape((-1,9))), axis=1), inflate(r[2]), r[3]))
-            return value
-            #return [(r[0], np.concatenate((inflate(r[1]), inflate_x(r[4]).reshape((-1,9))), axis=1), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)] 
+            #value = []
+            #for r in rows:
+            #    r1, r4 = inflate(r[1]), inflate_x(r[4])
+            #    if r1.shape[0] == r4.shape[0]:
+            #        value.append((r[0], np.concatenate((r1, r4.reshape((-1,9))), axis=1), inflate(r[2]), r[3]))
+            #return value
+            return [(r[0], np.concatenate((inflate(r[1]), inflate_x(r[4]).reshape((-1,9))), axis=1), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)] 
         else:
             return [(r[0], inflate(r[1]), inflate(r[2]), r[3]) for r in rows] # if ((not check_status) or r[4] == 1)]
         
@@ -284,10 +281,10 @@ class MysqlDB():
         con.commit()
         con.close()
 
-    def get_finished_idxs(self, limit=None, ordered=False, block_size=1e4):
+    def get_finished_idxs(self, limit=None, ordered=False):
         con = pymysql.connect(**self.connect_params)
         with con.cursor() as cursor:
-            command = "select id from data where status = 1 and weights is not null"
+            command = "select data.id from data inner join status_log on data.id = status_log.id where status_log.status = 1 and data.weights is not null"
             if ordered:
                 command += " order by id asc"
             if isinstance(limit, int):
@@ -296,6 +293,7 @@ class MysqlDB():
             idxs = [x[0] for x in cursor.fetchall()]
         con.close()
         return idxs
+
 
     def get_unfinished_idxs(self, start_row, stop_row):
         con = pymysql.connect(**self.connect_params)
