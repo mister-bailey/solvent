@@ -8,8 +8,7 @@ from history import TrainTestHistory
 
 class TrainingRun:
     def __init__(self, parent_dir="runs/", identifier=None, config_file=None, settings={}, create_file=True, create_identifier=True):
-        settings = {k:str(v) for k,v in settings.items()} # may need to allow alternate string conversions
-        parser = ConfigParser()
+        self.settings = {k:str(v) for k,v in settings.items()} # may need to allow alternate string conversions
 
         if identifier is None:
             if settings != {} and create_identifier:
@@ -24,9 +23,9 @@ class TrainingRun:
         os.makedirs(self.run_dir, exist_ok=True)
         self.save_prefix = self.run_dir + identifier[:7]
 
-        parser.add_section('training')
-        parser['training']['save_prefix'] = self.save_prefix
-        parser['training']['resume'] = "True"
+        settings['training'] = {}
+        settings['training']['save_prefix'] = self.save_prefix
+        settings['training']['resume'] = "True"
 
         if config_file is None:
             config_file = self.run_dir + "training.ini"
@@ -42,6 +41,11 @@ class TrainingRun:
 
         self.settings = {sec : dict(parser[sec]) for sec in parser}
         self.__history = None
+        self.__local_dict = None
+        self.__config = None
+        
+    def save_settings(self):
+        pass
 
     def load_history(self):
         self.__history = TrainTestHistory.load(prefix = self.save_prefix)
@@ -49,16 +53,28 @@ class TrainingRun:
 
     @property
     def history(self):
-        if self.history is None:
+        if self.__history is None:
             self.load_history()
         return self.__history
-        
 
-    # creates a Config by reading from filenames then adding in self.settings
-    # note that if *filenames is empty, we use training.ini + command line arguments
-    def load_config(self, *filenames):
-        self.config = Config(*filenames, self.settings)
-        return self.config
+    # creates a Config by reading from local config_file, then training.ini, then adding in self.settings
+    @property
+    def config(self):
+        if self.__config is None:
+            self.__config = Config(self.config_file, self.settings)
+        return self.__config
+        
+    @property
+    def local_dict(self):
+        if self.__local_dict is None:
+            parser = ConfigParser(allow_no_value=True)
+            parser.read(self.config_file)
+            parser.read_dict(self.settings)
+            self.
+        
+    @property
+    def seed(self):
+        if "exploration" in self.settings 
 
     def execute_run(self, configs=[]):
         configs.append(self.config_file)
@@ -80,6 +96,8 @@ class EnsembleOfRuns:
         if use_existing:
             self.runs = {d.name: TrainingRun(parent_dir=parent_dir, identifier=d.name)
                          for d in os.scandir(parent_dir) if d.is_dir()}
+        else:
+            self.runs = {}
 
     # num training cycles through the ensemble
     # num < 0 means keep on going
@@ -90,7 +108,13 @@ class EnsembleOfRuns:
         while n != num:
             for run in self.runs.values():
                 run.execute_run(configs)
+    
+    @property       
+    def seeds(self):
+        return 
 
+    def generate_parameters_and_seed(self):
+        
     
     def generate_parameters(self, var):
         """

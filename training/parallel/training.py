@@ -456,9 +456,11 @@ def main():
                 data_queue.appendleft(data)
             t_wait = time.time()-time1
 
+            #print("[0]: Starting training...")
             time1 = time.time()
             train_losses = train_batch(data_queue, model, optimizer, use_tensor_constraint=use_tensor_constraint)
             train_time = time.time() - time1
+            #print("[0]: Finished training.")
 
             example_number = min(example_number + batch_size, training_size)
             batch_in_epoch += 1
@@ -522,6 +524,8 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
 
     device = f"cuda:{rank}"
     torch.cuda.set_device(rank)
+    
+    use_tensor_constraint = False if model_kwargs['Rs_out'] == [(1,0,1)] else True
 
     model = VariableParityNetwork(**model_kwargs)
     if model_state_dict is not None:
@@ -542,22 +546,22 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
 
     data_queue = deque(maxlen=preload)
     while True:
-        if verbose: print(f"[{rank}]: Starting train loop...", flush=True)
+        #if verbose: print(f"[{rank}]: Starting train loop...", flush=True)
         #if verbose: print(f"[{rank}]: Querying pipeline... ", end='', flush=True)
         #any_coming = pipeline.any_coming()
         #if verbose: print(f"Done. ", flush=True)
         time1 = time.time()
         while (len(data_queue) < preload and pipeline.any_coming()) or len(data_queue)==0:
-            if verbose: print(f"[{rank}]: Getting batch... ", end='', flush=True)
+            #if verbose: print(f"[{rank}]: Getting batch... ", end='', flush=True)
             data = pipeline.get_batch().to(device)
             data_queue.appendleft(data)
-            if verbose: print("Done.", flush=True)
+            #if verbose: print("Done.", flush=True)
         wait_time = time.time() - time1
-        if verbose: print(f"[{rank}]: wait time = {wait_time:.2f}", flush=True)
+        #if verbose: print(f"[{rank}]: wait time = {wait_time:.2f}", flush=True)
 
-        if verbose: print(f"[{rank}]: Training batch...", flush=True)
-        _ = train_batch(data_queue, model, optimizer)
-        if verbose: print(f"[{rank}]: Finished training batch.", flush=True)
+        if verbose: print(f"[{rank}]: Starting training...", flush=True)
+        _ = train_batch(data_queue, model, optimizer, use_tensor_constraint=use_tensor_constraint)
+        if verbose: print(f"[{rank}]: Finished training.", flush=True)
 
         if test_key is not None and test_index < 10:
             test_rank = (test_index % (world_size-1)) + 1

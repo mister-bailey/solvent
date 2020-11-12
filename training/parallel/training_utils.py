@@ -51,16 +51,21 @@ def cull_checkpoints(save_prefix, number):
 
 # mean-squared loss (not RMS!)
 def loss_function(predictions, data, use_tensor_constraint=False):
+    
+    rank = str(data.x.device)[-1]
     if use_tensor_constraint:
+        #print(f"[{rank}]: Converting 3x3 label to e3 tensor...", flush=True)
         observations = tensor_constraint.convert(data.y)
     else:
         observations = data.y
+    #print(f"[{rank}]: Computing loss...", flush=True)
     residuals = predictions - observations
     weights = data.weights
     normalization = weights.sum()
     loss = (weights.t() @ residuals.square()) / normalization
     
     if use_tensor_constraint:
+        #print(f"[{rank}]: Building loss return values...", flush=True)
         return loss[0], loss[1:9].sum(), residuals
     else:
         return loss, residuals
@@ -76,8 +81,13 @@ def train_batch(data_queue, model, optimizer, use_tensor_constraint=False):
 
     #data = data.to(device)
     data = data_queue.pop()
+    
+    rank = str(data.x.device)[-1]
+    #print(f"[{rank}]: Running model...", flush=True)
     output = model(data.x, data.edge_index, data.edge_attr)
+    #print(f"[{rank}]: Computing loss...", flush=True)
     scalar_loss, *tensor_losses, _ = loss_function(output, data, use_tensor_constraint=use_tensor_constraint)
+    #print(f"[{rank}]: Portioning loss...", flush=True)
     if use_tensor_constraint:
         tensor_loss = tensor_losses[0]
         loss = scalar_loss + tensor_loss
@@ -85,9 +95,13 @@ def train_batch(data_queue, model, optimizer, use_tensor_constraint=False):
         loss = scalar_loss
 
     # backward pass
+    #print(f"[{rank}]: Zero grad...", flush=True)
     optimizer.zero_grad()
+    #print(f"[{rank}]: Backward pass...", flush=True)
     loss.backward()
+    #print(f"[{rank}]: Optimizer step...", flush=True)
     optimizer.step()
+    #print(f"[{rank}]: Done update.", flush=True)
 
     # return RMSE
     if use_tensor_constraint:
