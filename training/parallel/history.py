@@ -15,12 +15,12 @@ from pipeline import Molecule
 
 class TrainTestHistory:
     def __init__(self, examples_per_epoch, examples_per_batch, testing_batches, relevant_elements, device,
-                 save_prefix, run_name, number_to_symbol=None, smoothing_window=10, store_residuals=False,
+                 save_prefix, run_name, number_to_symbol=None, smoothing_window=10, use_tensor_constraint=False, store_residuals=False,
                  sparse_logging=True, wandb_log=None):
         if sparse_logging:
-            self.train = SparseTrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, wandb_log)
+            self.train = SparseTrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, use_tensor_constraint, wandb_log)
         else:
-            self.train = TrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, wandb_log)
+            self.train = TrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, use_tensor_constraint, wandb_log)
         self.test = TestingHistory(examples_per_epoch, testing_batches, relevant_elements, device,
                                   number_to_symbol=number_to_symbol, store_residuals=store_residuals, wandb_log=wandb_log)
         self.save_prefix = save_prefix
@@ -91,7 +91,7 @@ class BaseHistory:
         
 
 class TrainingHistory(BaseHistory):
-    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, wandb_log=None):
+    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, use_tensor_constraint=False, wandb_log=None):
         self.examples_per_epoch = examples_per_epoch
         self.examples_per_batch = examples_per_batch
         self.batches_per_epoch = math.ceil(examples_per_epoch / examples_per_batch)
@@ -116,6 +116,10 @@ class TrainingHistory(BaseHistory):
 
         self.loss=[None]
         self.smoothed_loss=[None]
+        
+        if use_tensor_constraint:
+            self.tensor_loss=[None]
+            self.smoothed_tensor_loss=[None]
 
         # this list has one entry per epoch
         # epoch e starts at index epoch_start[e]
@@ -123,7 +127,7 @@ class TrainingHistory(BaseHistory):
 
 
 
-    def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, loss, scalar_loss=None,
+    def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, scalar_loss, tensor_loss=None,
                   epoch=None, batch_in_epoch=None, verbose=True):
 
         # if you don't provide batch numbers or epoch numbers, we will make reasonable assumptions:
@@ -140,16 +144,23 @@ class TrainingHistory(BaseHistory):
 
         self.elapsed_time.append(self.elapsed_time[-1] + batch_time)
         self.atoms_in_batch.append(atoms_in_batch)
-        self.loss.append(loss)
+        
+        self.loss.append(scalar_loss)
         window = min(len(self.loss)-1, self.smoothing_window)
         self.smoothed_loss.append(sum(self.loss[-window:]) / window)
-        #print(f"batches_remaining: {self.batches_remaining_in_epoch()}")
+
+        if tensor_loss is not None:
+            self.tensor_loss.append(tensor_loss)
+            window = min(len(self.tensor_loss)-1, self.smoothing_window)
+            self.smoothed_tensor_loss.append(sum(self.tensor_loss[-window:]) / window)
 
         if verbose:
             print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batch_in_epoch[-1] + self.batches_remaining_in_epoch()}  " +
-                  ("train_loss =" if scalar_loss is None else "loss =") + f"{self.smoothed_loss[-1]:8.3f}  " +
-                  ("" if scalar_loss is None else f"scal_loss ={scalar_loss:8.3f}") +
-                  f"  t_train = {batch_time:.2f} s  t_wait = {wait_time:.2f} s  t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
+                  ("loss =" if tensor_loss is None else "scalar_loss =") + f"{self.smoothed_loss[-1]:8.3f}  " +
+                  ("" if tensor_loss is None else f"tensor_loss ={self.smoothed_tensor_loss[-1]:8.3f}") +
+                  f"  t_train = {batch_time:.2f} s  " +
+                  (f"t_wait = {wait_time:.2f} s  " if tensor_loss is None else "") +
+                  f"t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
                    end="\r", flush=True)
 
     def num_batches(self):
@@ -221,13 +232,13 @@ class SparseTrainingHistory(TrainingHistory):
     
     """    
     
-    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, wandb_log=None):
-        super().__init__(examples_per_epoch, examples_per_batch, smoothing_window, wandb_log)
+    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, use_tensor_constraint=False, wandb_log=None):
+        super().__init__(examples_per_epoch, examples_per_batch, smoothing_window, use_tensor_constraint, wandb_log)
         
 
 
     def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, example_number,
-                  loss, scalar_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
+                  scalar_loss, tensor_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
         self.elapsed_time.append(self.elapsed_time[-1] + batch_time) # worry about this with sparse logging
         # we don't assume example_number is within batch or over all batches
         example_number = example_number % self.examples_per_epoch
@@ -245,26 +256,38 @@ class SparseTrainingHistory(TrainingHistory):
         self.example_number.append(example_number)
         self.atoms_in_batch.append(atoms_in_batch)
         
-        self.loss.append(loss)
+        self.loss.append(scalar_loss)
         window = min(len(self.loss)-1, self.smoothing_window)
         self.smoothed_loss.append(sum(self.loss[-window:]) / window)
         
+        if tensor_loss is not None:
+            self.tensor_loss.append(tensor_loss)
+            window = min(len(self.tensor_loss)-1, self.smoothing_window)
+            self.smoothed_tensor_loss.append(sum(self.tensor_loss[-window:]) / window)            
+        
         if self.wandb_log is not None:
-            self.wandb_log({
+            log_dict = {
                 'elapsed_time':self.elapsed_time[-1],
                 'epoch':epoch,
                 'batch_in_epoch':batch_in_epoch,
                 'example_number':example_number,
                 'examples_in_batch':examples_in_batch,
                 'atoms_in_batch':atoms_in_batch,
-                'train_loss':loss,
-                'smoothed_train_loss':self.smoothed_loss[-1]})
+                ('train_loss' if tensor_loss is None else 'scalar_loss'):scalar_loss,
+                ('smoothed_train_loss' if tensor_loss is None else 'smoothed_scalar_loss'):self.smoothed_loss[-1]
+            }
+            if tensor_loss is not None:
+                log_dict['tensor_loss'] = tensor_loss
+                log_dict['smoothed_tensor_loss'] = self.smoothed_tensor_loss[-1]
+            self.wandb_log(log_dict)
 
         if verbose:
             print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batch_in_epoch[-1] + self.batches_remaining_in_epoch()}  " +
-                  ("train_loss =" if scalar_loss is None else "loss =") + f"{self.smoothed_loss[-1]:8.3f}  " +
-                  ("" if scalar_loss is None else f"scal_loss ={scalar_loss:8.3f}") +
-                  f"  t_train = {batch_time:.2f} s  t_wait = {wait_time:.2f} s  t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
+                  ("loss =" if tensor_loss is None else "scalar_loss =") + f"{self.smoothed_loss[-1]:8.3f}  " +
+                  ("" if tensor_loss is None else f"tensor_loss ={self.smoothed_tensor_loss[-1]:8.3f}") +
+                  f"  t_train = {batch_time:.2f} s  " +
+                  (f"t_wait = {wait_time:.2f} s  " if tensor_loss is None else "") +
+                  f"t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
                    end="\r", flush=True)
 
     def num_batches(self):
@@ -333,7 +356,7 @@ class TestingHistory(BaseHistory):
 
     def run_test(self, model, batch_number, epoch, batch_in_epoch, example_number, elapsed_time, verbose=True, log=True):
         if verbose: print("\n")
-        use_tensor_constraint = self.testing_batches[0].y.shape[-1] == 10
+        use_tensor_constraint = (self.testing_batches[0].y.shape[-1] == 10)
 
         time0 = time.time()
         losses = []
@@ -343,8 +366,8 @@ class TestingHistory(BaseHistory):
             for i, batch in enumerate(self.testing_batches):
                 if verbose: print(f"Testing batches...  {i:3} / {len(self.testing_batches)}   ", end="\r", flush=True)
                 batch.to(self.device)
-                *_, loss, chunk = loss_function(model(batch.x, batch.edge_index, batch.edge_attr), batch, use_tensor_constraint=use_tensor_constraint)
-                losses.append(loss)
+                scalar_loss, *_, chunk = loss_function(model(batch.x, batch.edge_index, batch.edge_attr), batch, use_tensor_constraint=use_tensor_constraint)
+                losses.append(scalar_loss)
                 residual_chunks.append(chunk)
 
         if verbose: print("Collating batch results...", end="\r", flush=True)

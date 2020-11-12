@@ -284,8 +284,8 @@ def main():
             print(e)
             exit()
         testing_examples.append(example)
-        if len(testing_examples) <= 5:
-            print(f"batch.y : {list(example.y.shape)}")
+        #if len(testing_examples) <= 5:
+        #    print(f"batch.y : {list(example.y.shape)}")
         #    print(f"ID = {example.ID}")
         #    in_out = torch.cat((Molecule.get_atomic_numbers(example.x).unsqueeze(1), example.y), 1)
         #    for a in in_out:
@@ -376,6 +376,7 @@ def main():
         wandb.config.use_tensor_constraint = config.training.use_tensor_constraint
 
     wandb_log = wandb.log if use_wandb else None
+    use_tensor_constraint = config.training.use_tensor_constraint
 
     if resume:
         try:
@@ -398,9 +399,10 @@ def main():
                 exit()
             resume = False
     if not resume:
-        history = TrainTestHistory(training_size, batch_size, testing_batches,
-                                   relevant_elements, device, save_prefix, run_name, config.number_to_symbol,
-                                   sparse_logging=True, wandb_log=wandb_log)
+        history = TrainTestHistory(training_size, batch_size, testing_batches, relevant_elements, device,
+                                   save_prefix, run_name, config.number_to_symbol,
+                                   use_tensor_constraint=use_tensor_constraint, sparse_logging=True,
+                                   wandb_log=wandb_log)
         partial_epoch = False
         start_epoch = 1
 
@@ -448,16 +450,12 @@ def main():
         # iterate through all training examples
         while pipeline.any_coming() or len(data_queue) > 0:
 
-            #print("Getting batches from pipeline... ")
             time1 = time.time()
             while len(data_queue) < preload and pipeline.any_coming():
-                #print("Loading batch... ", end='', flush=True)
                 data = pipeline.get_batch().to(device)
                 data_queue.appendleft(data)
-                #print("Done", flush=True)
             t_wait = time.time()-time1
 
-            #print("Training batch...")
             time1 = time.time()
             train_losses = train_batch(data_queue, model, optimizer, use_tensor_constraint=use_tensor_constraint)
             train_time = time.time() - time1
@@ -465,7 +463,6 @@ def main():
             example_number = min(example_number + batch_size, training_size)
             batch_in_epoch += 1
             
-            #print("Logging batch...")
             history.train.log_batch(train_time, t_wait, data.n_examples, len(
                 data.x), example_number, *train_losses, epoch=epoch)
 
