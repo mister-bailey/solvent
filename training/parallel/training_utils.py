@@ -61,7 +61,7 @@ def loss_function(predictions, data, use_tensor_constraint=False):
     loss = (weights.t() @ residuals.square()) / normalization
     
     if use_tensor_constraint:
-        return loss[1:10].sum(), loss[0], residuals
+        return loss[0], loss[1:9].sum(), residuals
     else:
         return loss, residuals
 
@@ -77,9 +77,12 @@ def train_batch(data_queue, model, optimizer, use_tensor_constraint=False):
     #data = data.to(device)
     data = data_queue.pop()
     output = model(data.x, data.edge_index, data.edge_attr)
-    loss, *other_losses, _ = loss_function(output, data, use_tensor_constraint=use_tensor_constraint)
+    scalar_loss, *tensor_losses, _ = loss_function(output, data, use_tensor_constraint=use_tensor_constraint)
     if use_tensor_constraint:
-        scalar_loss = other_losses[0]
+        tensor_loss = tensor_losses[0]
+        loss = scalar_loss + tensor_loss
+    else:
+        loss = scalar_loss
 
     # backward pass
     optimizer.zero_grad()
@@ -88,7 +91,7 @@ def train_batch(data_queue, model, optimizer, use_tensor_constraint=False):
 
     # return RMSE
     if use_tensor_constraint:
-        return np.sqrt(loss.item()), np.sqrt(scalar_loss.item())
+        return np.sqrt(scalar_loss.item()), np.sqrt(tensor_loss.item())
     else:
         return (np.sqrt(loss.item()),)
 
