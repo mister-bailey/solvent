@@ -1,7 +1,8 @@
 from glob import glob
-import configparser
+from configparser import ConfigParser
 import sys
 import os
+from collections import defaultdict
 from collections.abc import Mapping
 
 # import code for evaluating radial models
@@ -20,6 +21,37 @@ def str_to_secs(s):
     t_strings = s.split(":")
     assert len(t_strings) <= 3, f"Time string '{s}' has too many terms!"
     return sum(eval(n) * 60 ** i for i,n in enumerate(reversed(t_strings)))
+    
+def get_any(s):
+    for e in s:
+        break
+    return e
+
+# recursively updates possibly-nested dictionary
+def update(d, u):
+    for k, v in u.items():
+        if isinstance(v, Mapping):
+            d[k] = update(d.get(k, {}), v)
+        else:
+            d[k] = v
+    return d
+    
+def dict_update(pairs):
+    d = dict()
+    for k, v in pairs:
+        if k in d and isinstance(d[k], Mapping):
+            update(d[k], v)
+        else:
+            k[d] = v
+    return d
+
+def invert_dict(d, one_to_many=True, recursive=True):
+    if recursive and isinstance(d.values()[0], Mapping):
+        return dict_update(((k0, {k1 : v1}) for k1, d1 in d.items() for k0, v1 in invert_dict(d1).items()))
+    if one_to_many:
+        return {k : set(v for v in d if d[v] == k) for k in set(d.values())}
+    else:
+        return {k : v for v, k in d.items()}
 
 class NO_STORE:
     def __init__(self):
@@ -149,29 +181,47 @@ class Config:
     # parses config files
     # later filenames overwrite values from earlier filenames
     # (so you can have mini configs that change just a few settings)
-    def __init__(self, *filenames, settings=None, _set_names=False):
+    # automatically includes "training.ini" as first file, unless arg specifies otherwise
+    # adds command line arguments to filenames, unless arg specifies otherwise
+    def __init__(self, *filenames, settings=None, use_training_ini=True, use_command_args=True, track_sources=False, _set_names=False):
         if _set_names: # Only here to satisfy pylint and the code highlighter
             self._set_names()
-        self._parser = configparser.ConfigParser(allow_no_value=True)
+        self._parser = ConfigParser(allow_no_value=True)
 
-        if len(filenames) == 0:
-            filenames = ["training.ini"]
-            if len(sys.argv) > 1:
+        filenames = list(filenames)
+        if use_training_ini and "training.ini" not in filenames:
+            filenames = ["training.ini"] + filenames
+        if use_command_args and len(sys.argv) > 1:
                 filenames += sys.argv[1:]
 
         #print(f"Loading config from files {filenames}...")
                 
         files_worked = self._parser.read(filenames)
         print(f"Loaded config from files {files_worked}.")
-
+        
         # load any sub-configs specified in the file:
         sub_files = self._parser.read(self.get_sub_configs())
-        print(f"Loaded sub-config from files {sub_files}")
-        
+        print(f"Loaded sub-config from files {sub_files}")        
 
         # load in extra caller-provided settings:
         if isinstance(settings, Mapping):
             self._parser.read_dict(settings)
+        
+        if track_sources:
+            self.source = defaultdict(dict)
+            for f in files_worked + sub_files:
+                p = ConfigParser(allow_no_value=True)
+                p.read(f)
+                for sec_name, section in p.items():
+                    if sec_name != "DEFAULT":
+                        for prop_name, val in section.items():
+                            if val is not None:
+                                self.source[sec_name][prop_name] = f
+            del p
+            self.by_source = invert_dict(self.source)
+                            
+
+
 
         # dictionaries between symbols and numbers
         self.load_section('symbols_numbers_dict', key_func=title_case, eval_func=int)
