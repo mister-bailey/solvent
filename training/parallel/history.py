@@ -355,7 +355,7 @@ class TestingHistory(BaseHistory):
             plt.legend(loc="best")
 
     def run_test(self, model, batch_number, epoch, batch_in_epoch, example_number, elapsed_time, verbose=True, log=True):
-        if verbose: print("\n")
+        if verbose: print("")
         use_tensor_constraint = (self.testing_batches[0].y.shape[-1] == 10)
 
         time0 = time.time()
@@ -367,6 +367,8 @@ class TestingHistory(BaseHistory):
                 if verbose: print(f"Testing batches...  {i:3} / {len(self.testing_batches)}   ", end="\r", flush=True)
                 batch.to(self.device)
                 scalar_loss, *_, chunk = loss_function(model(batch.x, batch.edge_index, batch.edge_attr), batch, use_tensor_constraint=use_tensor_constraint)
+                if use_tensor_constraint:
+                    chunk = chunk[...,0] # Keep only scalar part of residuals
                 losses.append(scalar_loss)
                 residual_chunks.append(chunk)
 

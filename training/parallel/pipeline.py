@@ -184,6 +184,8 @@ class Pipeline():
         self.working.acquire()
         self.command_queue.put(ScanTo(0))
 
+    def set_shuffle(self, shuffle):
+        self.command_queue.put(SetShuffle(shuffle))
 
     def any_coming(self):  # returns True if at least one example is coming
         wait_semaphore(self.knows)
@@ -297,6 +299,13 @@ class SetIndices(DatasetSignal):
 
     def __str__(self):
         return f"SetIndices({len(self.indices)})"
+        
+class SetShuffle(DatasetSignal):
+    def __init__(self, shuffle=True):
+        self.shuffle_incoming = shuffle
+    
+    def __str__(self):
+        return f"SetShuffle({self.shuffle_incoming})"
 
 
 #class ReadTestSet(DatasetSignal):
@@ -385,6 +394,8 @@ class DatasetReader(Process):
                     self.pipeline.put_batch(self.pipeline.get_batch_from_ext())
             elif isinstance(command, SetIndices):
                 self.indices = command.indices
+            elif isinstance(command, SetShuffle):
+                self.shuffle_incoming = command.shuffle_incoming
             else:
                 raise ValueError("unexpected work type")
             self.pipeline.working.release()

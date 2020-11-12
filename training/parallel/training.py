@@ -216,12 +216,10 @@ def main():
     testing_size = config.data.testing_size
     training_size = config.data.training_size
     if config.data.randomize and config.data.test_train_shuffle and os.path.isfile(config.data.test_train_shuffle):
-        print(
-            f"Loading test/train shuffle indices from {config.data.test_train_shuffle}...")
+        print(f"Loading test/train shuffle indices from {config.data.test_train_shuffle}...")
         test_train_shuffle = torch.load(config.data.test_train_shuffle)
         if len(test_train_shuffle) != testing_size + training_size:
-            print(
-                f"Saved test/train shuffle has size {len(test_train_shuffle)}, but config specifies size {testing_size + training_size}!")
+            print(f"Saved test/train shuffle has size {len(test_train_shuffle)}, but config specifies size {testing_size + training_size}!")
             generate_shuffle = True
             if input("Will generate new shuffle. Overwrite old shuffle file? (y/n) ").strip().lower() == "y":
                 print("Ok.")
@@ -334,6 +332,8 @@ def main():
         dist.barrier()
         dist_batch_size = round(batch_size / config.gpus)
         batch_size = dist_batch_size * config.gpus
+    else:
+        config.gpus = 1
 
     ## test/train history ##
     print("\n === Setting up logging and testing ===")
@@ -416,6 +416,7 @@ def main():
     use_tensor_constraint = config.training.use_tensor_constraint
 
     pipeline.set_indices(training_shuffle)
+    pipeline.set_shuffle(True)
 
     start_elapsed = history.elapsed_time()
     
@@ -462,11 +463,12 @@ def main():
             train_time = time.time() - time1
             #print("[0]: Finished training.")
 
-            example_number = min(example_number + batch_size, training_size)
+            n_examples = min(batch_size, training_size - example_number)
+            example_number += n_examples
             batch_in_epoch += 1
             
-            history.train.log_batch(train_time, t_wait, data.n_examples, len(
-                data.x), example_number, *train_losses, epoch=epoch)
+            history.train.log_batch(train_time, t_wait, n_examples, len(
+                data.x) * config.gpus, example_number, *train_losses, epoch=epoch)
 
             if config.parallel and test_key is not None and test_index < 10:
                 test_rank = (test_index % (config.gpus-1)) + 1
