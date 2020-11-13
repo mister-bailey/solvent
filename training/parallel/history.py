@@ -273,8 +273,8 @@ class SparseTrainingHistory(TrainingHistory):
                 'example_number':example_number,
                 'examples_in_batch':examples_in_batch,
                 'atoms_in_batch':atoms_in_batch,
-                ('train_loss' if tensor_loss is None else 'scalar_loss'):scalar_loss,
-                ('smoothed_train_loss' if tensor_loss is None else 'smoothed_scalar_loss'):self.smoothed_loss[-1]
+                'scalar_loss':scalar_loss,
+                'smoothed_scalar_loss':self.smoothed_loss[-1]
             }
             if tensor_loss is not None:
                 log_dict['tensor_loss'] = tensor_loss
