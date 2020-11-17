@@ -42,11 +42,11 @@ def dict_update(pairs):
         if k in d and isinstance(d[k], Mapping):
             update(d[k], v)
         else:
-            k[d] = v
+            d[k] = v
     return d
 
 def invert_dict(d, one_to_many=True, recursive=True):
-    if recursive and isinstance(d.values()[0], Mapping):
+    if recursive and isinstance(next(iter(d.values())), Mapping):
         return dict_update(((k0, {k1 : v1}) for k1, d1 in d.items() for k0, v1 in invert_dict(d1).items()))
     if one_to_many:
         return {k : set(v for v in d if d[v] == k) for k in set(d.values())}
@@ -291,9 +291,9 @@ class Config:
 
         # training parameters
         self.load_section('training', eval_func=eval,
-                eval_funcs={'save_prefix':str, 'time_limit':str_to_secs},
+                eval_funcs={'save_prefix':str, 'time_limit':str_to_secs, 'run_name':str},
                 defaults={'save_prefix':None, 'resume':False, 'n_epochs':None, 'time_limit':None,
-                          'use_wandb':False, 'use_tensor_constraint':False})
+                          'run_name':None, 'use_wandb':False, 'use_tensor_constraint':False})
         
         # wandb authentication
         if self.training.use_wandb:

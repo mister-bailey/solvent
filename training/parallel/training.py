@@ -338,7 +338,7 @@ def main():
     ## test/train history ##
     print("\n === Setting up logging and testing ===")
 
-    run_name = re.findall(r"[^\\/]+", save_prefix)[-2]
+    run_name = re.findall(r"[^\\/]+", save_prefix)[-2] if config.training.run_name is None else config.training.run_name
     save_dir = os.path.join(*(re.findall(r"[^\\/]+", save_prefix)[:-1]))
     print(f"Run name: {run_name}")
 
