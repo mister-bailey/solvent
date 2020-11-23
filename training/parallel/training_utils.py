@@ -33,7 +33,7 @@ from molecule_pipeline import ExampleBatch
 # saves a model and optimizer to disk
 def save_checkpoint(model_kwargs, model, filename, optimizer, all_elements):
     model_dict = {
-        'state_dict' : model.state_dict(),
+        'state_dict' : {key.removeprefix("module."):value for key,value in model.state_dict().items()},
         'model_kwargs' : model_kwargs,
         'optimizer_state_dict' : optimizer.state_dict(),
         'all_elements' : all_elements,
@@ -52,7 +52,7 @@ def cull_checkpoints(save_prefix, number):
 # mean-squared loss (not RMS!)
 def loss_function(predictions, data, use_tensor_constraint=False):
     
-    rank = str(data.x.device)[-1]
+    #rank = str(data.x.device)[-1]
     if use_tensor_constraint:
         #print(f"[{rank}]: Converting 3x3 label to e3 tensor...", flush=True)
         observations = tensor_constraint.convert(data.y)
