@@ -383,11 +383,11 @@ def main():
             history = TrainTestHistory.load(
                 testing_batches, prefix=save_prefix, wandb_log=wandb_log)
             start_epoch = history.train.current_epoch()
-            example_number = history.train.example_in_epoch()
+            example_in_epoch = history.train.next_example_in_epoch()
             batch_in_epoch = history.train.next_batch_in_epoch()
             print("Resuming from prior training...")
             print(f"     start_epoch = {start_epoch}")
-            print(f"   start_example = {example_number}")
+            print(f"   example_in_epoch = {example_in_epoch}")
             print(f"  batch_in_epoch = {batch_in_epoch}")
             partial_epoch = True
         except Exception as e:
@@ -423,6 +423,27 @@ def main():
     test_index = 0
 
     data_queue = deque(maxlen=preload)
+    
+    # exit code
+    def finish():
+        print("Cleaning up...")
+        listener.stop()
+        pipeline.close()
+        print("\nProgram complete.")
+        exit()    
+    
+    # keyboard abort code
+    # press q to abort after current training iteration
+    from pynput import keyboard
+    from threading import Semaphore
+    abort_lock = Semaphore(0)
+    abort = False
+    def invoke_abort():
+        abort_lock.release()
+    hotkey = keyboard.HotKey(keyboard.HotKey.parse('q'), invoke_abort)
+    listener = keyboard.Listener(on_press=hotkey.press, on_release=hotkey.release)
+    listener.start()
+    
     for epoch in range(start_epoch, start_epoch + n_epochs):
         print("                                                                                                ")
         print(("Resuming" if partial_epoch else "Starting") +
@@ -432,7 +453,7 @@ def main():
         if partial_epoch:
             partial_epoch = False
         else:
-            example_number = 0
+            example_in_epoch = 0
             batch_in_epoch = 1
 
         batch_of_last_test = (
@@ -440,13 +461,10 @@ def main():
         batch_of_last_save = (batch_in_epoch // save_interval) * save_interval
 
         # return to the start of the training set
-        #print("Scanning to start of training set...")
-        pipeline.scan_to(example_number)
+        pipeline.scan_to(example_in_epoch)
 
-        # process the training examples
-        #print("Starting read into pipeline...")
         pipeline.start_reading(
-            training_size - example_number, batch_size=dist_batch_size)
+            training_size - example_in_epoch, batch_size=dist_batch_size)
 
         # iterate through all training examples
         while pipeline.any_coming() or len(data_queue) > 0:
@@ -463,12 +481,12 @@ def main():
             train_time = time.time() - time1
             #print("[0]: Finished training.")
 
-            n_examples = min(batch_size, training_size - example_number)
-            example_number += n_examples
+            n_examples = min(batch_size, training_size - example_in_epoch)
+            example_in_epoch += n_examples
             batch_in_epoch += 1
             
             history.train.log_batch(train_time, t_wait, n_examples, len(
-                data.x) * config.gpus, example_number, *train_losses, epoch=epoch)
+                data.x) * config.gpus, example_in_epoch, None, *train_losses, epoch=epoch)
 
             if config.parallel and test_key is not None and test_index < 10:
                 test_rank = (test_index % (config.gpus-1)) + 1
@@ -487,8 +505,10 @@ def main():
 
             times_up = time_limit is not None and history.elapsed_time() - \
                 start_elapsed >= time_limit
+                
+            abort = abort_lock.acquire(blocking=False)
 
-            if batch_in_epoch - batch_of_last_save >= save_interval or not pipeline.any_coming() or times_up:
+            if batch_in_epoch - batch_of_last_save >= save_interval or not pipeline.any_coming() or times_up or abort:
                 batch_of_last_save = batch_in_epoch
                 checkpoint_filename = f"{save_prefix}-e{epoch:03d}_b{batch_in_epoch:05}-checkpoint.torch"
                 save_checkpoint(model_kwargs, model,
@@ -498,22 +518,18 @@ def main():
                     cull_checkpoints(save_prefix, num_checkpoints)
 
             if times_up:
-                print(
-                    "                                                                                                 ")
-                print(
-                    f"Finished training for {str(timedelta(seconds=history.elapsed_time() - start_elapsed))[:-5]}.")
-                print("Cleaning up...")
-                pipeline.close()
-                print("\nProgram complete.")
-                exit()
+                print(f"\nFinished training for {str(timedelta(seconds=history.elapsed_time() - start_elapsed))[:-5]}.")
+                finish()
+            
+            if abort:
+                flush_input()
+                if input("\nAbort training run? (y/n) ").lower().strip() == 'y':
+                    print(f"Aborting training run.")
+                    finish()            
+            
 
-    # clean up
-    print("                                                                                                 ")
-    print(f"Finished training {n_epochs} epochs.")
-    print("Cleaning up...")
-    pipeline.close()
-
-    print("\nProgram complete.")
+    print(f"\nFinished training {n_epochs} epochs.")
+    finish()
 
 # auxiliary training processes (not the main one)
 def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_state_dict=None, optimizer_state_dict=None, preload=1, test_key=None):
@@ -572,7 +588,14 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
             if verbose and test_rank == rank: print(f"\n[{rank}]: sending test params ... ", flush=True)  
             dist.broadcast(model.state_dict()[test_key], src=test_rank)
 
-    
+def flush_input():
+    try:
+        import msvcrt
+        while msvcrt.kbhit():
+            msvcrt.getch()
+    except ImportError:
+        import sys, termios    #for linux/unix
+        termios.tcflush(sys.stdin, termios.TCIOFLUSH) 
 
 
 if __name__ == '__main__':

@@ -28,12 +28,16 @@ from molecule_pipeline import ExampleBatch
 #testing_size = training_config.testing_size
 #batch_size = training_config.batch_size
 
-### Functions for Training ###
+# in python 3.9+ this is a built-in function, but python 3.9 is rare in the wild right now:
+def remove_prefix(s, prefix):
+    if s.startswith(prefix):
+        return s[len(prefix):]
+    return s
 
 # saves a model and optimizer to disk
 def save_checkpoint(model_kwargs, model, filename, optimizer, all_elements):
     model_dict = {
-        'state_dict' : {key.removeprefix("module."):value for key,value in model.state_dict().items()},
+        'state_dict' : {remove_prefix(key, "module."):value for key,value in model.state_dict().items()},
         'model_kwargs' : model_kwargs,
         'optimizer_state_dict' : optimizer.state_dict(),
         'all_elements' : all_elements,
@@ -82,7 +86,7 @@ def train_batch(data_queue, model, optimizer, use_tensor_constraint=False):
     #data = data.to(device)
     data = data_queue.pop()
     
-    rank = str(data.x.device)[-1]
+    #rank = str(data.x.device)[-1]
     #print(f"[{rank}]: Running model...", flush=True)
     output = model(data.x, data.edge_index, data.edge_attr)
     #print(f"[{rank}]: Computing loss...", flush=True)

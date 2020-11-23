@@ -60,18 +60,16 @@ class TrainTestHistory:
     def elapsed_time(self):
         return self.train.elapsed_time[-1]
 
-    def run_test(self, model, batch_number=None, epoch=None, batch_in_epoch=None, example_number=None, elapsed_time=None, *args, **kwargs):
+    def run_test(self, model, batch_number=None, epoch=None, batch_in_epoch=None, example_in_epoch=None, example=None, elapsed_time=None, *args, **kwargs):
         if batch_number is None: batch_number = len(self.train.loss)
         if epoch is None: epoch = self.train.epoch[-1]
         if batch_in_epoch is None: batch_in_epoch = self.train.batch_in_epoch[-1]
-        if example_number is None: example_number = self.train.example_number[-1]
+        if example_in_epoch is None: example_in_epoch = self.train.example_in_epoch[-1]
+        if example is None: example = self.train.example[-1]
         if elapsed_time is None: elapsed_time = self.train.elapsed_time[-1]
-        self.test.run_test(model, batch_number, epoch, batch_in_epoch, example_number, elapsed_time, *args, **kwargs)
+        self.test.run_test(model, batch_number, epoch, batch_in_epoch, example_in_epoch, example, elapsed_time, *args, **kwargs)
 
 class BaseHistory:
-
-    def total_examples(self, index=-1):
-        return (self.epoch[index] - 1) * self.examples_per_epoch + self.example_number[index]
 
     # methods for finding comparison points
 
@@ -82,10 +80,10 @@ class BaseHistory:
         raise Exception("This should be overloaded!")
 
     def max_epoch_example(self):
-        return self.epoch[-1], self.example_number[-1]
+        return self.epoch[-1], self.example_in_epoch[-1]
 
     def max_example(self):
-        return self.total_examples()
+        return self.example[-1]
 
     def max_time(self):
         return self.elapsed_time[-1]
@@ -107,8 +105,8 @@ class TrainingHistory(BaseHistory):
         self.epoch=[0]
 
         # batch n covers example[example_number[n-1]:example_number[n]]
-        self.example_number=[examples_per_epoch]
-        self.total_example_number=[0]
+        self.example_in_epoch=[examples_per_epoch]
+        self.example=[0]
         
         self.examples_in_batch=[0]
 
@@ -136,15 +134,15 @@ class TrainingHistory(BaseHistory):
         # if you don't provide batch numbers or epoch numbers, we will make reasonable assumptions:
         epoch = self.current_epoch() if epoch is None else epoch
         if epoch > self.epoch[-1]:
-            self.epoch_start.append(epoch)
+            self.epoch_start.append(len(self.example))
         self.epoch.append(epoch)
 
         batch_in_epoch = self.next_batch_in_epoch() if batch_in_epoch is None else batch_in_epoch
         self.batch_in_epoch.append(batch_in_epoch)
 
         self.examples_in_batch.append(examples_in_batch)
-        self.example_number.append((self.example_number[-1] + examples_in_batch) % self.examples_per_epoch)
-        self.total_example_number.append((epoch - 1) * self.examples_per_epoch + self.example_number[-1])
+        self.example_in_epoch.append((self.example_in_epoch[-1] + examples_in_batch - 1) % self.examples_per_epoch + 1)
+        self.example.append(self.example[-1] + examples_in_batch)
 
         self.elapsed_time.append(self.elapsed_time[-1] + batch_time)
         self.atoms_in_batch.append(atoms_in_batch)
@@ -174,41 +172,34 @@ class TrainingHistory(BaseHistory):
     def num_epochs(self):
         return len(self.epoch_start) - 1
 
-    def ends_epoch(self, batch, offset=0):
-        """
-        True iff batch is last in epoch
-        offset arbitrarily adds examples before evaluating
-        """
-        return self.example_number[batch] + offset >= self.examples_per_epoch
-
-    def current_epoch(self, batch=-1, offset=0):
+    def current_epoch(self, batch=-1):
         """
         epoch of the next incoming batch
         """
-        return self.epoch[batch] if not self.ends_epoch(batch, offset=offset) else self.epoch[batch] + 1
+        return self.epoch[batch] + self.example_in_epoch[batch] // self.examples_per_epoch
+        
+    def next_example_in_epoch(self, batch=-1):
+        """
+        example in epoch that would start next batch
+        """
+        return self.example_in_epoch[-1] % self.examples_per_epoch
 
-    def next_batch_in_epoch(self, batch=-1, offset=0):
+    def next_batch_in_epoch(self, batch=-1):
         """
         batch number that would follow given batch
         wraps around to 1 if epoch ends
         """
-        return self.batch_in_epoch[batch] + 1 if not self.ends_epoch(batch, offset=offset) else 1
+        return 1 if self.example_in_epoch[batch] >= self.examples_per_epoch else self.batch_in_epoch[batch] + 1
 
     def batches_remaining_in_epoch(self, batch=-1):
-        return math.ceil((self.examples_per_epoch - self.example_number[batch]) / self.examples_per_batch)
-
-    def example_in_epoch(self, batch=-1, offset=0):
-        """
-        tells you which example number would start the following batch
-        """
-        return self.example_number[batch] if not self.ends_epoch(batch, offset=offset) else 0
+        return math.ceil((self.examples_per_epoch - self.example_in_epoch[batch]) / self.examples_per_batch)
 
     def max_batch(self):
         return len(self.loss) - 1
         
     # x_axis = 'time' and y_axis = 'loss' are also allowed
-    def plot(self, figure=None, x_axis='batch_number', y_axis='smoothed_loss'):
-        x_axis = range(1, len(self.loss)) if x_axis=='batch number' else self.elapsed_time[1:]
+    def plot(self, figure=None, x_axis='example', y_axis='smoothed_loss'):
+        x_axis = self.example[1:] if x_axis=='example' else self.elapsed_time[1:]
         y_axis = self.smoothed_loss[1:] if y_axis=='smoothed_loss' else self.loss[1:]
         
         if figure is None:
@@ -241,22 +232,27 @@ class SparseTrainingHistory(TrainingHistory):
         
 
 
-    def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, example_number,
-                  scalar_loss, tensor_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
+    def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, example_in_epoch,
+                  example, scalar_loss, tensor_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
         self.elapsed_time.append(self.elapsed_time[-1] + batch_time) # worry about this with sparse logging
 
-        # if you don't provide batch numbers or epoch numbers, we will make reasonable assumptions:
+        if example is None:
+            example = (epoch-1) * self.examples_per_epoch + example_in_epoch
+        elif example_in_epoch is None:
+            example_in_epoch = (example - 1) % self.examples_per_epoch + 1
+
         epoch = self.epoch[-1] if epoch is None else epoch
-        if example_number > self.examples_per_epoch:
+        if example_in_epoch > self.examples_per_epoch:
             epoch += 1
-            self.epoch_start.append(epoch)
+        if epoch > self.epoch[-1]:
+            self.epoch_start.append(len(self.example))
         self.epoch.append(epoch)
 
-        batch_in_epoch = math.ceil(example_number / self.examples_per_batch)
+        batch_in_epoch = math.ceil(example_in_epoch / self.examples_per_batch)
         self.batch_in_epoch.append(batch_in_epoch)
         self.examples_in_batch.append(examples_in_batch)
-        self.example_number.append(example_number)
-        self.total_example_number.append(example_number + examples_per_epoch * (epoch - 1))
+        self.example_in_epoch.append(example_in_epoch)
+        self.example.append(example)
         self.atoms_in_batch.append(atoms_in_batch)
         
         self.loss.append(scalar_loss)
@@ -273,8 +269,8 @@ class SparseTrainingHistory(TrainingHistory):
                 'elapsed_time':self.elapsed_time[-1],
                 'epoch':epoch,
                 'batch_in_epoch':batch_in_epoch,
-                'example_number':example_number,
-                'total_example_number':self.total_example_number[-1],
+                'example_in_epoch':example_in_epoch,
+                'example':example,
                 'examples_in_batch':examples_in_batch,
                 'atoms_in_batch':atoms_in_batch,
                 'scalar_loss':scalar_loss,
@@ -300,9 +296,6 @@ class SparseTrainingHistory(TrainingHistory):
     # number of epochs we have seen, inclusive of partial epochs
     def num_epochs(self):
         return self.epoch[-1]
-
-    def batches_remaining_in_epoch(self, batch=-1):
-        return math.ceil((self.examples_per_epoch - self.example_number[batch]) / self.examples_per_batch)
 
     def max_batch(self):
         return len(self.loss) - 1
@@ -342,7 +335,8 @@ class TestingHistory(BaseHistory):
         self.batch_number = []
         self.epoch = []
         self.batch_in_epoch = []
-        self.example_number = []
+        self.example_in_epoch = []
+        self.example = []
         self.elapsed_time = []
         self.loss = []
         self.mean_error_by_element = []
@@ -351,15 +345,15 @@ class TestingHistory(BaseHistory):
     def max_batch(self):
         return self.batch_number[-1]
         
-    def plot(self, figure=None, x_axis='batch_number'): # x_axis = 'time' is also allowed
-        x_axis = self.batch_number if x_axis=='batch number' else self.elapsed_time
+    def plot(self, figure=None, x_axis='example'): # x_axis = 'time' is also allowed
+        x_axis = self.example if x_axis=='example' else self.elapsed_time
         if figure is None:
             plt.figure(figsize=(12,8))
         plt.plot(np.array(x_axis), np.array(self.loss), "bo-", label="test")
         if figure is None:
             plt.legend(loc="best")
 
-    def run_test(self, model, batch_number, epoch, batch_in_epoch, example_number, elapsed_time, verbose=True, log=True):
+    def run_test(self, model, batch_number, epoch, batch_in_epoch, example_in_epoch, example, elapsed_time, verbose=True, log=True):
         if verbose: print("")
         use_tensor_constraint = (self.testing_batches[0].y.shape[-1] == 10)
 
@@ -374,8 +368,8 @@ class TestingHistory(BaseHistory):
                 scalar_loss, *_, chunk = loss_function(model(batch.x, batch.edge_index, batch.edge_attr), batch, use_tensor_constraint=use_tensor_constraint)
                 if use_tensor_constraint:
                     chunk = chunk[...,0] # Keep only scalar part of residuals
-                losses.append(scalar_loss)
-                residual_chunks.append(chunk)
+                losses.append(scalar_loss.detach())
+                residual_chunks.append(chunk.detach())
 
         if verbose: print("Collating batch results...", end="\r", flush=True)
         # Using average loss over batches, rather than weighted average, to better mirror
@@ -402,15 +396,20 @@ class TestingHistory(BaseHistory):
                 print(f"    {self.number_to_symbol[e].rjust(2)}       {mean_error_by_element[e]:3.3f}     {RMSE_by_element[e]:3.3f}")
 
         if log:
-            self.log_test(batch_number, epoch, batch_in_epoch, example_number, elapsed_time,
+            if example is None:
+                example = (epoch-1) * self.examples_per_epoch + example_in_epoch
+            elif example_in_epoch is None:
+                example_in_epoch = example % self.examples_per_epoch
+            self.log_test(batch_number, epoch, batch_in_epoch, example_in_epoch, example, elapsed_time,
                     loss, mean_error_by_element, RMSE_by_element, residuals_by_element)
 
-    def log_test(self, batch_number, epoch, batch_in_epoch, example_number, elapsed_time,
+    def log_test(self, batch_number, epoch, batch_in_epoch, example_in_epoch, example, elapsed_time,
             loss, mean_error_by_element, RMSE_by_element, residuals_by_element=None):
         self.batch_number.append(batch_number)
         self.epoch.append(epoch)
         self.batch_in_epoch.append(batch_in_epoch)
-        self.example_number.append(example_number)
+        self.example_in_epoch.append(example_in_epoch)
+        self.example.append(example)
         self.elapsed_time.append(elapsed_time)
         self.loss.append(loss)
         self.mean_error_by_element.append(mean_error_by_element)
@@ -423,7 +422,8 @@ class TestingHistory(BaseHistory):
                 'batch_number':batch_number,
                 'epoch':epoch,
                 'batch_in_epoch':batch_in_epoch,
-                'example_number':example_number,
+                'example_in_epoch':example_in_epoch,
+                'example':example,
                 'elapsed_time':elapsed_time,
                 'test_loss':loss,
                 'mean_error_by_element':mean_error_by_element,
@@ -437,10 +437,10 @@ class TestingHistory(BaseHistory):
     def coord(self, coord):
         if coord == 'time':
             return self.elapsed_time
-        elif coord == 'batch':
-            return self.batch_number
+        elif coord == 'example':
+            return self.example
         else:
-            raise ValueError("Argument 'coord' should be 'time' or 'batch'")
+            raise ValueError("Argument 'coord' should be 'time' or 'example'")
                 
     def loss_interpolate(self, x, coord='time', window=5):
         x_array = self.coord(coord)
