@@ -15,14 +15,15 @@ from pipeline import Molecule
 
 class TrainTestHistory:
     def __init__(self, examples_per_epoch, examples_per_batch, testing_batches, relevant_elements, device,
-                 save_prefix, run_name, number_to_symbol=None, smoothing_window=10, use_tensor_constraint=False, store_residuals=False,
+                 save_prefix, run_name, number_to_symbol=None, smoothing_window=10, failed=0, use_tensor_constraint=False, store_residuals=False,
                  sparse_logging=True, wandb_log=None):
         if sparse_logging:
-            self.train = SparseTrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, use_tensor_constraint, wandb_log)
+            self.train = SparseTrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, failed, use_tensor_constraint, wandb_log)
         else:
-            self.train = TrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, use_tensor_constraint, wandb_log)
-        self.test = TestingHistory(examples_per_epoch, testing_batches, relevant_elements, device,
+            self.train = TrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, failed, use_tensor_constraint, wandb_log)
+        self.test = TestingHistory(examples_per_epoch, testing_batches, relevant_elements, device, failed,
                                   number_to_symbol=number_to_symbol, store_residuals=store_residuals, wandb_log=wandb_log)
+        self.failed = failed
         self.save_prefix = save_prefix
         self.name = run_name
     
@@ -91,11 +92,12 @@ class BaseHistory:
         
 
 class TrainingHistory(BaseHistory):
-    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, use_tensor_constraint=False, wandb_log=None):
+    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, failed=0, use_tensor_constraint=False, wandb_log=None):
         self.examples_per_epoch = examples_per_epoch
         self.examples_per_batch = examples_per_batch
         self.batches_per_epoch = math.ceil(examples_per_epoch / examples_per_batch)
         self.smoothing_window = smoothing_window
+        self.failed = failed
         self.wandb_log = wandb_log
 
         # initialize the lists we will be accumulating
@@ -106,6 +108,7 @@ class TrainingHistory(BaseHistory):
 
         # batch n covers example[example_number[n-1]:example_number[n]]
         self.example_number=[examples_per_epoch]
+        self.total_example_number=[0]
         
         self.examples_in_batch=[0]
 
@@ -140,7 +143,8 @@ class TrainingHistory(BaseHistory):
         self.batch_in_epoch.append(batch_in_epoch)
 
         self.examples_in_batch.append(examples_in_batch)
-        self.example_number.append(self.example_in_epoch() + examples_in_batch)
+        self.example_number.append((self.example_number[-1] + examples_in_batch) % self.examples_per_epoch)
+        self.total_example_number.append((epoch - 1) * self.examples_per_epoch + self.example_number[-1])
 
         self.elapsed_time.append(self.elapsed_time[-1] + batch_time)
         self.atoms_in_batch.append(atoms_in_batch)
@@ -232,16 +236,14 @@ class SparseTrainingHistory(TrainingHistory):
     
     """    
     
-    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, use_tensor_constraint=False, wandb_log=None):
-        super().__init__(examples_per_epoch, examples_per_batch, smoothing_window, use_tensor_constraint, wandb_log)
+    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, failed=0, use_tensor_constraint=False, wandb_log=None):
+        super().__init__(examples_per_epoch, examples_per_batch, smoothing_window, failed, use_tensor_constraint, wandb_log)
         
 
 
     def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, example_number,
                   scalar_loss, tensor_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
         self.elapsed_time.append(self.elapsed_time[-1] + batch_time) # worry about this with sparse logging
-        # we don't assume example_number is within batch or over all batches
-        example_number = example_number % self.examples_per_epoch
 
         # if you don't provide batch numbers or epoch numbers, we will make reasonable assumptions:
         epoch = self.epoch[-1] if epoch is None else epoch
@@ -254,6 +256,7 @@ class SparseTrainingHistory(TrainingHistory):
         self.batch_in_epoch.append(batch_in_epoch)
         self.examples_in_batch.append(examples_in_batch)
         self.example_number.append(example_number)
+        self.total_example_number.append(example_number + examples_per_epoch * (epoch - 1))
         self.atoms_in_batch.append(atoms_in_batch)
         
         self.loss.append(scalar_loss)
@@ -271,6 +274,7 @@ class SparseTrainingHistory(TrainingHistory):
                 'epoch':epoch,
                 'batch_in_epoch':batch_in_epoch,
                 'example_number':example_number,
+                'total_example_number':self.total_example_number[-1],
                 'examples_in_batch':examples_in_batch,
                 'atoms_in_batch':atoms_in_batch,
                 'scalar_loss':scalar_loss,
@@ -308,10 +312,11 @@ class TestingHistory(BaseHistory):
 
     # training_window_size: moving average for training_loss over this many minibatches
     def __init__(self, examples_per_epoch, testing_batches, relevant_elements, device,
-            number_to_symbol=None, store_residuals=False, wandb_log=None):
+                 failed=0, number_to_symbol=None, store_residuals=False, wandb_log=None):
         self.examples_per_epoch = examples_per_epoch
         self.testing_batches = testing_batches
         self.device = device
+        self.failed = failed
         self.relevant_elements = relevant_elements
         self.number_to_symbol = number_to_symbol if number_to_symbol else Config().number_to_symbol
         self.store_residuals = store_residuals
@@ -423,27 +428,44 @@ class TestingHistory(BaseHistory):
                 'test_loss':loss,
                 'mean_error_by_element':mean_error_by_element,
                 'RMSE_by_element':RMSE_by_element})
+                
+    def smoothed_loss(self, i, window=5):
+        i = len(self.loss) - i if i < 0 else i
+        window = min(window, i)
+        return sum(self.loss[i-window:i+1]) / window
+        
+    def coord(self, coord):
+        if coord == 'time':
+            return self.elapsed_time
+        elif coord == 'batch':
+            return self.batch_number
+        else:
+            raise ValueError("Argument 'coord' should be 'time' or 'batch'")
+                
+    def loss_interpolate(self, x, coord='time', window=5):
+        x_array = self.coord(coord)
+        i = bisect.bisect_right(x_array, x) 
+        if i > 0 and x_array[i-1] == x:
+            return self.smoothed_loss(i, window)
+        if i==0 or i==len(x_array):
+            raise ValueError(coord.capitalize() + " coordinate is out of bounds.")
+        x1 = x_array[i-1]
+        x2 = x_array[i]
+        s = (x2 - x) / (x2 - x1)
+        return s * self.smoothed_loss(i-1, window) + (1-s) * self.smoothed_loss(i, window)
 
-    def loss_by_time(self, t, extrapolate=False):
-        i = bisect.bisect_right(self.elapsed_time, t)
-        if i==0 or i==len(self.elapsed_time):
-            raise ValueError
-        t1 = self.elapsed_time[i-1]
-        t2 = self.elapsed_time[i]
-        s = (t2 - t) / (t2 - t1)
-        return s * self.loss[i-1] + (1-s) * self.loss[i]
-
-    def loss_by_example(self, n, extrapolate=False):
-        total_n = np.array(self.example_number) + self.examples_per_epoch * (np.array(self.epoch) - 1)
-        i = bisect.bisect_right(total_n, n)
-        if i==0 or i==len(total_n):
-            raise ValueError
-        n1 = total_n[i-1]
-        n2 = total_n[i]
-        s = (n2 - n) / (n2 - n1)
-        return s * self.loss[i-1] + (1-s) * self.loss[i]
-
-
+    def loss_extrapolate(self, x, histories, coord='time', window=5):
+        if self.failed or len(self.loss) == 0:
+            return float("nan")
+        last_x = self.coord(coord)[-1]
+        assert x > last_x, f"Tried to extrapolate, but given {coord} is within bounds."
+        last_loss = self.smoothed_loss(-1, window)
+        losses = []
+        for h in histories:
+            if h.coord(coord) >= x and h is not self:
+                losses.append(h.loss_interpolate(x, coord, window) * last_loss / h.loss_interpolate(last_x, coord, window))
+        assert losses, "Extrapolating beyond farthest history."
+        return sum(losses) / len(losses)
 
     def __getstate__(self):
         d = self.__dict__.copy()
