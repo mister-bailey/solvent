@@ -433,13 +433,13 @@ def main():
         print(f"Exiting with exit code {exit_code}.")
         exit(exit_code)    
     
+    abort = False
     if os.name == 'nt':
         # keyboard abort code
         # press q to abort after current training iteration
         from pynput import keyboard
         from threading import Semaphore
         abort_lock = Semaphore(0)
-        abort = False
         def invoke_abort():
             abort_lock.release()
         hotkey = keyboard.HotKey(keyboard.HotKey.parse('q'), invoke_abort)
