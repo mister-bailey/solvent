@@ -605,6 +605,7 @@ def flush_input():
         while msvcrt.kbhit():
             msvcrt.getch()
     except ImportError:
+        pass
         #import sys, termios    #for linux/unix
         #termios.tcflush(sys.stdin, termios.TCIOFLUSH) 
 
