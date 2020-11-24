@@ -427,7 +427,8 @@ def main():
     # exit code
     def finish(exit_code=0):
         print("Cleaning up...")
-        listener.stop()
+        if os.name == 'nt':
+            listener.stop()
         pipeline.close()
         print(f"Exiting with exit code {exit_code}.")
         exit(exit_code)    
