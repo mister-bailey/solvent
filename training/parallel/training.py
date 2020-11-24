@@ -514,8 +514,8 @@ def main():
             
             if os.name == 'nt':
                 abort = abort_lock.acquire(blocking=False)
-            if os.path.isfile("kill.file"):
-                os.remove("kill.file")
+            if os.path.isfile(os.path.join(save_dir, "kill.file")):
+                os.remove(os.path.join(save_dir, "kill.file"))
                 abort = True
 
             if batch_in_epoch - batch_of_last_save >= save_interval or not pipeline.any_coming() or times_up or abort:
