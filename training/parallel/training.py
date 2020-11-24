@@ -425,24 +425,25 @@ def main():
     data_queue = deque(maxlen=preload)
     
     # exit code
-    def finish():
+    def finish(exit_code=0):
         print("Cleaning up...")
         listener.stop()
         pipeline.close()
-        print("\nProgram complete.")
-        exit()    
+        print(f"Exiting with exit code {exit_code}.")
+        exit(exit_code)    
     
-    # keyboard abort code
-    # press q to abort after current training iteration
-    from pynput import keyboard
-    from threading import Semaphore
-    abort_lock = Semaphore(0)
-    abort = False
-    def invoke_abort():
-        abort_lock.release()
-    hotkey = keyboard.HotKey(keyboard.HotKey.parse('q'), invoke_abort)
-    listener = keyboard.Listener(on_press=hotkey.press, on_release=hotkey.release)
-    listener.start()
+    if os.name == 'nt':
+        # keyboard abort code
+        # press q to abort after current training iteration
+        from pynput import keyboard
+        from threading import Semaphore
+        abort_lock = Semaphore(0)
+        abort = False
+        def invoke_abort():
+            abort_lock.release()
+        hotkey = keyboard.HotKey(keyboard.HotKey.parse('q'), invoke_abort)
+        listener = keyboard.Listener(on_press=hotkey.press, on_release=hotkey.release)
+        listener.start()
     
     for epoch in range(start_epoch, start_epoch + n_epochs):
         print("                                                                                                ")
@@ -475,11 +476,16 @@ def main():
                 data_queue.appendleft(data)
             t_wait = time.time()-time1
 
-            #print("[0]: Starting training...")
             time1 = time.time()
-            train_losses = train_batch(data_queue, model, optimizer, use_tensor_constraint=use_tensor_constraint)
+            try:
+                train_losses = train_batch(data_queue, model, optimizer, use_tensor_constraint=use_tensor_constraint)
+            except RuntimeError as e:
+                print(e)
+                if 'CUDA' in e.args[0]:
+                    finish(3)
+                else:
+                    finish(4)
             train_time = time.time() - time1
-            #print("[0]: Finished training.")
 
             n_examples = min(batch_size, training_size - example_in_epoch)
             example_in_epoch += n_examples
@@ -505,8 +511,12 @@ def main():
 
             times_up = time_limit is not None and history.elapsed_time() - \
                 start_elapsed >= time_limit
-                
-            abort = abort_lock.acquire(blocking=False)
+            
+            if os.name == 'nt':
+                abort = abort_lock.acquire(blocking=False)
+            if os.path.isfile("kill.file"):
+                os.remove("kill.file")
+                abort = True
 
             if batch_in_epoch - batch_of_last_save >= save_interval or not pipeline.any_coming() or times_up or abort:
                 batch_of_last_save = batch_in_epoch
@@ -534,7 +544,7 @@ def main():
 # auxiliary training processes (not the main one)
 def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_state_dict=None, optimizer_state_dict=None, preload=1, test_key=None):
     rank += 1  # We already have a "main" process which should take rank 0
-    print(f"\nGPU rank {rank} reporting for duty!\n")
+    print(f"GPU rank {rank} reporting for duty.")
 
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
