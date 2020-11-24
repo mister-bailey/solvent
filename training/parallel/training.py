@@ -517,7 +517,7 @@ def main():
                 abort = abort_lock.acquire(blocking=False)
             if os.path.isfile(os.path.join(save_dir, "kill.file")):
                 os.remove(os.path.join(save_dir, "kill.file"))
-                abort = True
+                abort = 2
 
             if batch_in_epoch - batch_of_last_save >= save_interval or not pipeline.any_coming() or times_up or abort:
                 batch_of_last_save = batch_in_epoch
@@ -534,7 +534,7 @@ def main():
             
             if abort:
                 flush_input()
-                if input("\nAbort training run? (y/n) ").lower().strip() == 'y':
+                if abort == 2 or input("\nAbort training run? (y/n) ").lower().strip() == 'y':
                     print(f"Aborting training run.")
                     finish()            
             
@@ -605,8 +605,8 @@ def flush_input():
         while msvcrt.kbhit():
             msvcrt.getch()
     except ImportError:
-        import sys, termios    #for linux/unix
-        termios.tcflush(sys.stdin, termios.TCIOFLUSH) 
+        #import sys, termios    #for linux/unix
+        #termios.tcflush(sys.stdin, termios.TCIOFLUSH) 
 
 
 if __name__ == '__main__':
