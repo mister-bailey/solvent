@@ -46,15 +46,17 @@ class VariableParityNetwork(torch.nn.Module):
         modules = []
 
         Rs = Rs_in
+        assert all(isinstance(l, int) for l in lmaxes), f"lmaxes should be a list of integers, but\nlmaxes = {lmaxes}"
         if isinstance(muls, int):
             muls = [muls] * len(lmaxes)
         else:
-            assert len(muls) == len(lmaxes), "Multiplicities and lmaxes have different number of layers!"
+            assert len(muls) == len(lmaxes), "Multiplicities and lmaxes have different numbers of layers!"
 
         for i, (mul, lmax) in enumerate(zip(muls, lmaxes)):
             if isinstance(mul, int):
                 mul = [mul] * (lmax + 1)
             else:
+                assert all(isinstance(m, int) for m in mul), f"muls[{i}] should be an intaeger or list of integers, but\nmuls[{i}] = {mul}"
                 assert len(mul) == lmax + 1, f"On layer {i}, len(muls[{i}] != lmax + 1 == {lmax} + 1 !!!"
             scalars = [(m, l, p) for m, l, p in [(mul[0], 0, +1), (mul[0], 0, -1)] if rs.haslinearpath(Rs, l, p)]
             act_scalars = [(m, swish if p == 1 else tanh) for m, l, p in scalars]
