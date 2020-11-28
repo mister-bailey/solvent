@@ -11,6 +11,7 @@ from datetime import timedelta
 from training_utils import loss_function
 from training_config import Config
 from pipeline import Molecule
+from resizable import Array
 
 
 class TrainTestHistory:
@@ -102,29 +103,29 @@ class TrainingHistory(BaseHistory):
         # these lists correspond to each other
         # one entry per batch
         # batch 0 is a dummy batch
-        self.epoch=[0]
+        self.epoch=Array([0])
 
         # batch n covers example[example_number[n-1]:example_number[n]]
-        self.example_in_epoch=[examples_per_epoch]
-        self.example=[0]
+        self.example_in_epoch=Array([examples_per_epoch])
+        self.example=Array([0])
         
-        self.examples_in_batch=[0]
+        self.examples_in_batch=Array([0])
 
-        self.batch_in_epoch=[0]
-        self.elapsed_time=[0]
+        self.batch_in_epoch=Array([0])
+        self.elapsed_time=Array([0.0])
 
-        self.atoms_in_batch=[0]
+        self.atoms_in_batch=Array([0])
 
-        self.loss=[None]
-        self.smoothed_loss=[None]
+        self.loss=Array([float("inf")])
+        self.smoothed_loss=Array([float("inf")])
         
         if use_tensor_constraint:
-            self.tensor_loss=[None]
-            self.smoothed_tensor_loss=[None]
+            self.tensor_loss=Array([float("inf")])
+            self.smoothed_tensor_loss=Array([float("inf")])
 
         # this list has one entry per epoch
         # epoch e starts at index epoch_start[e]
-        self.epoch_start=[0] # includes a dummy epoch 0 starting at batch 0
+        self.epoch_start=Array([0]) # includes a dummy epoch 0 starting at batch 0
 
 
 
@@ -332,13 +333,13 @@ class TestingHistory(BaseHistory):
         self.total_weight = sum(self.batch_weights)
 
         # initialize the lists we will be accumulating
-        self.batch_number = []
-        self.epoch = []
-        self.batch_in_epoch = []
-        self.example_in_epoch = []
-        self.example = []
-        self.elapsed_time = []
-        self.loss = []
+        self.batch_number = Array(dtype=int)
+        self.epoch = Array(dtype=int)
+        self.batch_in_epoch = Array(dtype=int)
+        self.example_in_epoch = Array(dtype=int)
+        self.example = Array(dtype=int)
+        self.elapsed_time = Array(dtype=float)
+        self.loss = Array(dtype=float)
         self.mean_error_by_element = []
         self.RMSE_by_element = []
 
@@ -472,8 +473,7 @@ class TestingHistory(BaseHistory):
         del d['testing_batches']
         del d['wandb_log']
         return d
-
-
+        
 
         
 
