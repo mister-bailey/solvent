@@ -61,12 +61,12 @@ class Array:
     def resize(self, new_length, shrink_data=False):
         if new_length < self.length:
             if shrink_data:
-                self.data.resize((mul_greater(self.chunk_size, new_length), *self.cross_shape))
+                self.data = np.resize(self.data, (mul_greater(self.chunk_size, new_length), *self.cross_shape))
                 self.data[new_length:min(self.length, len(self.data))] = 0
             else:
                 self.data[new_length:self.length] = 0
         elif new_length > len(self.data):
-            self.data.resize((mul_greater(self.chunk_size, new_length), *self.cross_shape))
+            self.data = np.resize(self.data, (mul_greater(self.chunk_size, new_length), *self.cross_shape))
         self.length = new_length
              
     def append(self, value):
