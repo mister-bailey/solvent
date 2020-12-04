@@ -1,4 +1,5 @@
 import numpy as np
+import h5py
 
 def mul_greater(c, x):
     return (x // c + 1) * c
@@ -13,7 +14,7 @@ class Array:
     """
     default_chunk_size = 1000
     
-    def __init__(self, array=None, shape=(0,), chunk_size=None, check_bounds=True, **kwargs):
+    def __init__(self, array=None, shape=(0,), chunk_size=None, **kwargs):
         if array is not None:
             array = np.array(array)
             shape = array.shape
@@ -142,4 +143,58 @@ class Array:
     def __ior__(self, other): 
         self.array | other
         return self
+    
+
+class H5Array(h5py.Dataset):
+    default_chunk_size = 256
+    default_compression = 'gzip'
+            
+    def __init__(self, h5, name, arg1=None, chunk_size=None, **kwargs):
+        data = None
+        if isinstance(arg1, tuple):
+            shape = arg1
+        elif isinstance(arg1, int):
+            shape = (arg1,)
+        elif arg1 is not None:
+            data = np.array(arg1)
+            shape = data.shape
+        elif 'data' in kwargs:
+            data = np.array(kwargs['data'])
+            shape = data.shape
+        elif 'shape' in kwargs:
+            shape = kwargs['shape']
+        elif h5 is not None and name in h5:
+            shape = h5[name].shape
+            chunk_size = h5[name].chunks[0]
+        else:
+            shape = (0,)
+        
+        if chunk_size is None:
+            chunk_size = H5Array.default_chunk_size
+        self.cross_shape = shape[1:]
+        kwargs['shape'] = shape
+        kwargs['maxshape'] = (None, *self.cross_shape)
+        kwargs['chunks'] = (chunk_size, *self.cross_shape)
+        if 'compression' not in kwargs:
+            kwargs['compression'] = H5Array.default_compression
+                
+        if data is None:
+            if 'dtype' not in kwargs:
+                kwargs['dtype'] = h5[name].dtype
+            dset = h5.require_dataset(name, **kwargs)
+        else:
+            if 'dtype' not in kwargs:
+                kwargs['dtype'] = data.dtype
+            dset = h5.create_dataset(name, **kwargs)
+                
+        super().__init__(dset.id)
+        
+    def append(self, value):
+        super().resize(len(self)+1, axis=0)
+        self[-1] = value
+        
+    def resize(self, length):
+        super().resize(length, axis=0)
+
+    
     

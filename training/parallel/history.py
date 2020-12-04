@@ -20,8 +20,8 @@ import h5py
 class TrainTestHistory:
     def __init__(self, testing_batches=[], device='cuda', examples_per_epoch=None, relevant_elements=None, 
                  run_name=None, number_to_symbol=None, smoothing_window=10, failed=0,
-                 use_tensor_constraint=False, store_residuals=False, sparse_logging=True,
-                 wandb_log=None, file=None, save_prefix=None, hdf5=True, use_backup=True, load=True):
+                 use_tensor_constraint=False, store_residuals=False, wandb_log=None, wandb_interval=1,
+                 file=None, save_prefix=None, hdf5=True, use_backup=True, load=True):
         assert hdf5, "Non-hdf5 histories not currently working."
         self.hdf5 = hdf5
         self.use_backup = use_backup
@@ -40,19 +40,20 @@ class TrainTestHistory:
             if os.path.isfile(backup):
                 os.remove(backup)
                 
-            if sparse_logging:
-                self.train = SparseTrainingHistory(
-                    examples_per_epoch, smoothing_window, failed, use_tensor_constraint,
-                    wandb_log=wandb_log, file=self.file, hdf5=hdf5, load=False)
-            else:
-                raise ValueError("Currently only SparseTrainingHistory is working.")
-                self.train = TrainingHistory(examples_per_epoch, smoothing_window, failed, use_tensor_constraint, wandb_log)
-            self.test = TestingHistory(examples_per_epoch, testing_batches, relevant_elements, device, failed,
-                                    number_to_symbol=number_to_symbol, store_residuals=store_residuals, wandb_log=wandb_log)
+            self.train = TrainingHistory(
+                examples_per_epoch, smoothing_window, failed, use_tensor_constraint,
+                wandb_log=wandb_log, wandb_interval=wandb_interval,
+                file=self.file.create_group('train'), hdf5=hdf5, load=False)
+            self.test = TestingHistory(
+                examples_per_epoch, testing_batches, relevant_elements, device, failed,
+                number_to_symbol=number_to_symbol, store_residuals=store_residuals, wandb_log=wandb_log,
+                file=self.file.create_group('test'), hdf5=True, load=False)
             self.failed = failed
             self.file.attrs['failed'] = failed
             self.name = run_name
             self.file.attrs['name'] = run_name
+            self.file.attrs['examples_per_epoch'] = examples_per_epoch
+            self.file.attrs['use_tensor_constraint'] = use_tensor_constraint
 
         else:
             # load history from file
@@ -66,20 +67,21 @@ class TrainTestHistory:
                     os.remove(filename)
                     os.rename(filename + '.bak', filename)
                     self.file = h5py.File(filename, 'a')
+            self.save(verbose=False)
                     
             self.failed = self.file.attrs['failed']
             self.name = self.file.attrs['name']
-            self.examples_per_epoch = self.file.attrs['examples_per_epoch']
-            self.sparse_logging = self.file.attrs['sparse_logging']
-            if self.sparse_logging:
-                self.train = SparseTrainingHistory(
-                    self.examples_per_epoch, failed=self.failed,
-                    use_tensor_constraint=self.file.attrs['use_tensor_constraint'],
-                    wandb_log=wandb_log, file=self.file['train'], hdf5=True, load=True)
+            if 'examples_per_epoch' in self.file.attrs:
+                examples_per_epoch = self.file.attrs['examples_per_epoch']
             else:
-                raise ValueError("Currently only SparseTrainingHistory is fully implemented.")
+                self.file.attrs['examples_per_epoch'] = examples_per_epoch
+            self.file.attrs['use_tensor_constraint'] = use_tensor_constraint
+            self.train = TrainingHistory(
+                examples_per_epoch, failed=self.failed,
+                use_tensor_constraint=self.file.attrs['use_tensor_constraint'],
+                wandb_log=wandb_log, file=self.file['train'], hdf5=True, load=True)
             self.test = TestingHistory(
-                self.examples_per_epoch, testing_batches=testing_batches, device=device, failed=self.failed,
+                examples_per_epoch, testing_batches=testing_batches, device=device, failed=self.failed,
                 wandb_log=wandb_log, file=self.file['test'], hdf5=True, load=True)
             
             if os.path.isfile(filename + '.bak'):
@@ -87,16 +89,17 @@ class TrainTestHistory:
     
     def save(self, verbose = True):
         assert self.hdf5, "Non-hdf5 histories not currently working."
-        print("Saving " + ("and backing up " if self.use_backup else "") + "history...")
+        if verbose: print("Saving " + ("and backing up " if self.use_backup else "") + "history...")
         self.file.flush()
         if self.use_backup:
             copyfile(self.file.filename, self.file.filename + ".bak")
         
     def close(self, verbose = True):
         self.save()
+        filename = self.file.filename
         self.file.close()
         if self.use_backup:
-            backup = self.file.filename + '.bak'
+            backup = filename + '.bak'
             os.remove(backup)
                 
             
@@ -146,91 +149,117 @@ class BaseHistory:
 
 class TrainingHistory(BaseHistory):
     def __init__(self, examples_per_epoch, smoothing_window=10, failed=0, use_tensor_constraint=False,
-                 wandb_log=None, file=None, hdf5=True, load=True):
+                 wandb_log=None, wandb_interval=1, file=None, hdf5=True, load=True):
         self.examples_per_epoch = examples_per_epoch
         self.failed = failed
         self.wandb_log = wandb_log
+        self.wandb_interval = wandb_interval
         self.file = file
         
-        if hdf5:
-            if not load:
-                self.smoothing_window = smoothing_window
-                file.attrs['smoothing_window'] = smoothing_window
+        assert hdf5, "Non-hdf5 histories not implemented."
+        if not load:
+            self.smoothing_window = smoothing_window
+            file.attrs['smoothing_window'] = smoothing_window
+            
+            self.last_wandb = 0
+            file.attrs['last_wandb'] = 0
 
-                # initialize the lists we will be accumulating
-                # these lists correspond to each other
-                # one entry per batch
-                # batch 0 is a dummy batch
-                self.epoch=Array(file, 'epoch', [0])
+            # initialize the lists we will be accumulating
+            # these lists correspond to each other
+            # one entry per batch
+            # batch 0 is a dummy batch
+            self.epoch=Array(file, 'epoch', [0])
 
-                # batch n covers example[example_number[n-1]:example_number[n]]
-                self.example_in_epoch=Array(file, 'example_in_epoch', [examples_per_epoch])
-                self.example=Array(file, 'example', [0])
-                
-                self.examples_in_batch=Array(file, 'examples_in_batch', [0])
+            # batch n covers example[example_number[n-1]:example_number[n]]
+            self.example_in_epoch=Array(file, 'example_in_epoch', [examples_per_epoch])
+            self.example=Array(file, 'example', [0])
+            
+            self.examples_in_batch=Array(file, 'examples_in_batch', [0])
 
-                self.batch_in_epoch=Array(file, 'batch_in_epoch', [0])
-                self.elapsed_time=Array(file, 'elapsed_time', [0.0])
+            self.batch_in_epoch=Array(file, 'batch_in_epoch', [0])
+            self.elapsed_time=Array(file, 'elapsed_time', [0.0])
 
-                self.atoms_in_batch=Array(file, 'atoms_in_batch', [0])
+            self.atoms_in_batch=Array(file, 'atoms_in_batch', [0])
 
-                self.loss=Array(file, 'loss', [float("inf")])
-                self.smoothed_loss=Array(file, 'smoothed_loss', [float("inf")])
-                
-                if use_tensor_constraint:
-                    self.tensor_loss=Array(file, 'tensor_loss', [float("inf")])
-                    self.smoothed_tensor_loss=Array(file, 'smoothed_tensor_loss', [float("inf")])
+            self.loss=Array(file, 'loss', [float("inf")])
+            self.smoothed_loss=Array(file, 'smoothed_loss', [float("inf")])
+            
+            if use_tensor_constraint:
+                self.tensor_loss=Array(file, 'tensor_loss', [float("inf")])
+                self.smoothed_tensor_loss=Array(file, 'smoothed_tensor_loss', [float("inf")])
 
-                # this list has one entry per epoch
-                # epoch e starts at index epoch_start[e]
-                self.epoch_start=Array(file, 'epoch_start', [0]) # includes a dummy epoch 0 starting at batch 0
-            else:
-                self.smoothing_window = file.attrs['smoothing_window']
-                self.epoch=Array(file, 'epoch')
-                self.example_in_epoch=Array(file, 'example_in_epoch')
-                self.example=Array(file, 'example')               
-                self.examples_in_batch=Array(file, 'examples_in_batch')
-                self.batch_in_epoch=Array(file, 'batch_in_epoch')
-                self.elapsed_time=Array(file, 'elapsed_time')
-                self.atoms_in_batch=Array(file, 'atoms_in_batch')
-                self.loss=Array(file, 'loss')
-                self.smoothed_loss=Array(file, 'smoothed_loss')              
-                if use_tensor_constraint:
-                    self.tensor_loss=Array(file, 'tensor_loss')
-                    self.smoothed_tensor_loss=Array(file, 'smoothed_tensor_loss')
-                self.epoch_start=Array(file, 'epoch_start') 
+            # this list has one entry per epoch
+            # epoch e starts at index epoch_start[e]
+            self.epoch_start=Array(file, 'epoch_start', [0]) # includes a dummy epoch 0 starting at batch 0
         else:
-            raise ValueError("Non-hdf5 histories not currently working.")
+            self.smoothing_window = file.attrs['smoothing_window']
+            self.last_wandb = file.attrs['last_wandb']
+            
+            self.epoch=Array(file, 'epoch')
+            self.example_in_epoch=Array(file, 'example_in_epoch')
+            self.example=Array(file, 'example')               
+            self.examples_in_batch=Array(file, 'examples_in_batch')
+            self.batch_in_epoch=Array(file, 'batch_in_epoch')
+            self.elapsed_time=Array(file, 'elapsed_time')
+            self.atoms_in_batch=Array(file, 'atoms_in_batch')
+            self.loss=Array(file, 'loss')
+            self.smoothed_loss=Array(file, 'smoothed_loss')              
+            if use_tensor_constraint:
+                self.tensor_loss=Array(file, 'tensor_loss')
+                self.smoothed_tensor_loss=Array(file, 'smoothed_tensor_loss')
+            self.epoch_start=Array(file, 'epoch_start') 
+        
+    def log_batch(
+            self, batch_time, wait_time, examples_in_batch, atoms_in_batch, elapsed_time, example_in_epoch,
+            example, scalar_loss, tensor_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
+        self.elapsed_time.append(elapsed_time)
 
+        if example is None:
+            example = (epoch-1) * self.examples_per_epoch + example_in_epoch
+        elif example_in_epoch is None:
+            example_in_epoch = (example - 1) % self.examples_per_epoch + 1
 
-
-    def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, scalar_loss,
-                  tensor_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
-
-        # if you don't provide batch numbers or epoch numbers, we will make reasonable assumptions:
-        epoch = self.current_epoch() if epoch is None else epoch
+        epoch = self.epoch[-1] if epoch is None else epoch
+        if example_in_epoch > self.examples_per_epoch:
+            epoch += 1
         if epoch > self.epoch[-1]:
             self.epoch_start.append(len(self.example))
         self.epoch.append(epoch)
 
-        batch_in_epoch = self.next_batch_in_epoch() if batch_in_epoch is None else batch_in_epoch
-        self.batch_in_epoch.append(batch_in_epoch)
-
         self.examples_in_batch.append(examples_in_batch)
-        self.example_in_epoch.append((self.example_in_epoch[-1] + examples_in_batch - 1) % self.examples_per_epoch + 1)
-        self.example.append(self.example[-1] + examples_in_batch)
-
-        self.elapsed_time.append(self.elapsed_time[-1] + batch_time)
+        self.example_in_epoch.append(example_in_epoch)
+        self.example.append(example)
         self.atoms_in_batch.append(atoms_in_batch)
+        batch_in_epoch = math.ceil(example_in_epoch / self.examples_per_batch)
+        self.batch_in_epoch.append(batch_in_epoch)
         
         self.loss.append(scalar_loss)
         window = min(len(self.loss)-1, self.smoothing_window)
         self.smoothed_loss.append(sum(self.loss[-window:]) / window)
-
+        
         if tensor_loss is not None:
             self.tensor_loss.append(tensor_loss)
             window = min(len(self.tensor_loss)-1, self.smoothing_window)
-            self.smoothed_tensor_loss.append(sum(self.tensor_loss[-window:]) / window)
+            self.smoothed_tensor_loss.append(sum(self.tensor_loss[-window:]) / window)            
+        
+        if self.wandb_log is not None and len(self.loss) - 1 - self.last_wandb >= self.wandb_interval:
+            self.last_wandb = len(self.loss) - 1
+            self.file.attrs['last_wandb'] = self.last_wandb
+            log_dict = {
+                'elapsed_time':self.elapsed_time[-1],
+                'epoch':epoch,
+                'batch_in_epoch':batch_in_epoch,
+                'example_in_epoch':example_in_epoch,
+                'example':example,
+                'examples_in_batch':examples_in_batch,
+                'atoms_in_batch':atoms_in_batch,
+                'scalar_loss':scalar_loss,
+                'smoothed_scalar_loss':self.smoothed_loss[-1]
+            }
+            if tensor_loss is not None:
+                log_dict['tensor_loss'] = tensor_loss
+                log_dict['smoothed_tensor_loss'] = self.smoothed_tensor_loss[-1]
+            self.wandb_log(log_dict)
 
         if verbose:
             print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batch_in_epoch[-1] + self.batches_remaining_in_epoch()}  " +
@@ -269,7 +298,7 @@ class TrainingHistory(BaseHistory):
         
     @property
     def examples_per_batch(self):
-        return self.examples_in_batch[-1]
+        return max(self.examples_in_batch[-2:])
 
     def batches_remaining_in_epoch(self, batch=-1):
         return math.ceil((self.examples_per_epoch - self.example_in_epoch[batch]) / self.examples_per_batch)
@@ -291,95 +320,7 @@ class TrainingHistory(BaseHistory):
     def __getstate__(self):
         d = self.__dict__.copy()
         del d['wandb_log']
-        return d
-
-
-
-class SparseTrainingHistory(TrainingHistory):
-    """
-    A reimagining of the training history class which gets
-    sparse updates (i.e., nonconsecutive batches). Quantities
-    can't be computed by aggregation any more.
-    
-    Intended for distributed computing, when we don't want
-    all the processes vying to log at the same time. 
-    GPU 0 will own and have exclusive access to this history.
-    
-    """    
-    
-    def __init__(self, examples_per_epoch, smoothing_window=10, failed=0, use_tensor_constraint=False,
-                 wandb_log=None, file=None, hdf5=True, load=True):
-        super().__init__(examples_per_epoch, smoothing_window, failed, use_tensor_constraint, wandb_log,
-                         file=None, hdf5=True, load=True)
-        
-
-    def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, example_in_epoch,
-                  example, scalar_loss, tensor_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
-        self.elapsed_time.append(self.elapsed_time[-1] + batch_time) # worry about this with sparse logging
-
-        if example is None:
-            example = (epoch-1) * self.examples_per_epoch + example_in_epoch
-        elif example_in_epoch is None:
-            example_in_epoch = (example - 1) % self.examples_per_epoch + 1
-
-        epoch = self.epoch[-1] if epoch is None else epoch
-        if example_in_epoch > self.examples_per_epoch:
-            epoch += 1
-        if epoch > self.epoch[-1]:
-            self.epoch_start.append(len(self.example))
-        self.epoch.append(epoch)
-
-        batch_in_epoch = math.ceil(example_in_epoch / self.examples_per_batch)
-        self.batch_in_epoch.append(batch_in_epoch)
-        self.examples_in_batch.append(examples_in_batch)
-        self.example_in_epoch.append(example_in_epoch)
-        self.example.append(example)
-        self.atoms_in_batch.append(atoms_in_batch)
-        
-        self.loss.append(scalar_loss)
-        window = min(len(self.loss)-1, self.smoothing_window)
-        self.smoothed_loss.append(sum(self.loss[-window:]) / window)
-        
-        if tensor_loss is not None:
-            self.tensor_loss.append(tensor_loss)
-            window = min(len(self.tensor_loss)-1, self.smoothing_window)
-            self.smoothed_tensor_loss.append(sum(self.tensor_loss[-window:]) / window)            
-        
-        if self.wandb_log is not None:
-            log_dict = {
-                'elapsed_time':self.elapsed_time[-1],
-                'epoch':epoch,
-                'batch_in_epoch':batch_in_epoch,
-                'example_in_epoch':example_in_epoch,
-                'example':example,
-                'examples_in_batch':examples_in_batch,
-                'atoms_in_batch':atoms_in_batch,
-                'scalar_loss':scalar_loss,
-                'smoothed_scalar_loss':self.smoothed_loss[-1]
-            }
-            if tensor_loss is not None:
-                log_dict['tensor_loss'] = tensor_loss
-                log_dict['smoothed_tensor_loss'] = self.smoothed_tensor_loss[-1]
-            self.wandb_log(log_dict)
-
-        if verbose:
-            print(f"{self.epoch[-1]} : {self.batch_in_epoch[-1]} / {self.batch_in_epoch[-1] + self.batches_remaining_in_epoch()}  " +
-                  ("loss =" if tensor_loss is None else "scalar_loss =") + f"{self.smoothed_loss[-1]:8.3f}  " +
-                  ("" if tensor_loss is None else f"tensor_loss ={self.smoothed_tensor_loss[-1]:8.3f}") +
-                  f"  t_train = {batch_time:.2f} s  " +
-                  (f"t_wait = {wait_time:.2f} s  " if tensor_loss is None else "") +
-                  f"t = {str(timedelta(seconds=self.elapsed_time[-1]))[:-5]}   ",
-                   end="\r", flush=True)
-
-    def num_batches(self):
-        return len(self.epoch) - 1
-
-    # number of epochs we have seen, inclusive of partial epochs
-    def num_epochs(self):
-        return self.epoch[-1]
-
-    def max_batch(self):
-        return len(self.loss) - 1
+        return d        
 
 
 class TestingHistory(BaseHistory):
@@ -413,7 +354,7 @@ class TestingHistory(BaseHistory):
             self.mean_error_by_element = Array(file, 'mean_error_by_element', (0,len(relevant_elements)), dtype=float)
             self.RMSE_by_element = Array(file, 'RMSE_by_element', (0,len(relevant_elements)), dtype=float)
         else:
-            self.store_residuals = file.attrs['relevant_elements']
+            self.relevant_elements = file.attrs['relevant_elements']
             self.store_residuals = file.attrs['store_residuals']
 
             self.batch_number = Array(file, 'batch_number')
@@ -425,8 +366,6 @@ class TestingHistory(BaseHistory):
             self.loss = Array(file, 'loss')
             self.mean_error_by_element = Array(file, 'mean_error_by_element')
             self.RMSE_by_element = Array(file, 'RMSE_by_element')
-            
-
 
         # for each relevant element, gives you a list of atom indices in the testing set
         atom_indices = {e:[] for e in self.relevant_elements}
@@ -484,8 +423,8 @@ class TestingHistory(BaseHistory):
         residuals_by_element = {e:residuals[self.atom_indices[e]] for e in self.relevant_elements}
 
         # compute mean errors and RMSEs
-        mean_error_by_element = [residuals_by_element[e].mean() for e in self.relevant_elements]
-        RMSE_by_element = [residuals_by_element[e].square().mean().sqrt() for e in self.relevant_elements]
+        mean_error_by_element = torch.tensor([residuals_by_element[e].mean() for e in self.relevant_elements])
+        RMSE_by_element = torch.tensor([residuals_by_element[e].square().mean().sqrt() for e in self.relevant_elements])
 
         time1 = time.time()
         test_time = time1 - time0
@@ -494,7 +433,7 @@ class TestingHistory(BaseHistory):
             print(f"  Test loss = {loss:6.3f}   Test time = {test_time:.2f}")
             print(f"  Element   Mean Error    RMSE")
             #print(f"<4> Ee  <7>  012.345 <5> 012.345")
-            for i, e in self.relevant_elements:
+            for i, e in enumerate(self.relevant_elements):
                 print(f"    {self.number_to_symbol[e].rjust(2)}       {mean_error_by_element[i]:3.3f}     {RMSE_by_element[i]:3.3f}")
 
         if log:

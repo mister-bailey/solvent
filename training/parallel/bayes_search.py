@@ -25,6 +25,9 @@ from wandb.sweeps.base import Search
 from wandb.sweeps.params import HyperParameter, HyperParameterSet
 
 sklearn_gaussian = get_module('sklearn.gaussian_process')
+sklearn_linear = get_module('sklearn.linear_model')
+sklearn_svm = get_module('sklearn.svm')
+sklearn_discriminant = get_module('sklearn.discriminant_analysis')
 scipy_stats = get_module('scipy.stats')
 
 
@@ -46,6 +49,22 @@ def fit_normalized_gaussian_process(X, y, nu=1.5):
     y_norm = (y - y_mean) / y_stddev
     gp.fit(X, y_norm)
     return gp, y_mean, y_stddev
+    
+def train_logistic_regression(X, y):
+    lr = sklearn_linear.LogisticRegression()
+    lr.fit(X, y.astype(int))
+    return lambda X : lr.predict_proba(X)[...,1], 0, 1
+    
+def train_rbf_svm(X, y):
+    svc = sklearn_svm.SVC(probability=True)
+    svc.fit(X, y.astype(int))
+    return lambda X : svc.predict_proba(X)[...,1], 0, 1
+    
+def train_qda(X,y):
+    qda = sklearn_discriminant.QuadraticDiscriminantAnalysis()
+    qda.fit(X, y.astype(int))
+    return lambda X : qda.predict_proba(X)[...,1], 0, 1
+    
 
 
 def sigmoid(x):
@@ -80,11 +99,20 @@ def predict(X, y, test_X, nu=1.5):
     return y_pred_norm[0], y_std_norm[0]
 
 
-def train_runtime_model(sample_X, runtimes, X_bounds):
+def train_runtime_model(sample_X, runtimes, X_bounds, nu=1.5, model='gaussian'):
     if sample_X.shape[0] != runtimes.shape[0]:
         raise ValueError("Sample X and runtimes must be the same length")
 
-    return train_gaussian_process(sample_X, runtimes, X_bounds)
+    if model=='gaussian':
+        return train_gaussian_process(sample_X, runtimes, X_bounds, nu=nu)
+    elif model=='logistic' and runtimes.any() and not runtimes.all():
+        return train_logistic_regression(sample_X, runtimes)
+    elif model=='rbf_svm' and runtimes.any() and not runtimes.all():
+        return train_rbf_svm(sample_X, runtimes)
+    elif model=='qda' and runtimes.sum() > 1 and runtimes.sum() < len(runtimes) - 1:
+        return train_qda(sample_X, runtimes)
+    else:
+        return None, 0, 1
 
 
 #def train_failure_model(sample_X, failures, X_bounds):
@@ -158,7 +186,7 @@ def train_gaussian_process(
         current_y_fantasy = (gp.predict(current_X) * y_stddev) + y_mean
         y = np.append(y, current_y_fantasy)
         gp, y_mean, y_stddev = fit_normalized_gaussian_process(X, y, nu=nu)
-    return gp, y_mean, y_stddev
+    return gp.predict, y_mean, y_stddev
 
 
 def filter_weird_values(sample_X, sample_y):
@@ -214,13 +242,16 @@ def next_sample(
             test_X - 2d array of length num_points_to_try by num features: tested X values
             y_pred - 1d array of length num_points_to_try: predicted values for test_X
             y_pred_std - 1d array of length num_points_to_try: predicted std deviation for test_X
+            e_i - expected improvement
             prob_of_improve 1d array of lenth num_points_to_try: predicted porbability of improvement
             prob_of_failure 1d array of predicted probabilites of failure
+            suggested_X_prob_of_failure
             expected_runtime 1d array of expected runtimes
     """
     # Sanity check the data
     sample_X = np.array(sample_X)
     sample_y = np.array(sample_y)
+    failures = np.array(failures)
     if test_X is not None:
         test_X = np.array(test_X)
     if len(sample_X.shape) != 2:
@@ -258,12 +289,12 @@ def next_sample(
     # This is *different* than the runtime model.
     failure_model = None
     if failures is not None and sample_X.shape[0] >= 2:
-        failure_filtered_X, failure_filtered_runtimes = filter_weird_values(
+        failure_filtered_X, failure_filtered_y = filter_weird_values(
             sample_X, failures
         )
         if failure_filtered_X.shape[0] >= 2:
             failure_model, failure_model_mean, failure_model_stddev = train_runtime_model(
-                failure_filtered_X, failure_filtered_runtimes, X_bounds
+                failure_filtered_X, failure_filtered_y, X_bounds, model='rbf_svm'#'logistic'
             )
     # we can't run this algothim with less than two sample points, so we'll
     # just return a random point
@@ -278,27 +309,30 @@ def next_sample(
             prediction = 0.0
         else:
             prediction = filtered_y[0]
-        return X, 1.0, prediction, None, None, None, None, None, None
+        return X, 1.0, prediction, None, None, None, None, None, None, None
 
     # build the acquisition function
     gp, y_mean, y_stddev, = train_gaussian_process(
         filtered_X, filtered_y, X_bounds, current_X, nu, max_samples_for_gp
     )
-    num_test_samples = 1000
     # Look for the minimum value of our fitted-target-function + (kappa * fitted-target-std_dev)
     if test_X is None:  # this is the usual case
-        test_X = random_sample(X_bounds, num_test_samples)
-    y_pred, y_pred_std = gp.predict(test_X, return_std=True)
+        test_X = random_sample(X_bounds, num_points_to_try)
+    y_pred, y_pred_std = gp(test_X, return_std=True)
     if failure_model is None:
-        prob_of_failure = [0.0] * len(test_X)
+        prob_of_failure = np.zeros(len(test_X))
     else:
-        prob_of_failure = failure_model.predict(
+        prob_of_failure = failure_model(
             test_X
         ) * failure_model_stddev + failure_model_mean
+        #print(f"prob_of_failure: {prob_of_failure}")
+    k = 2
+    a = 2
+    prob_of_failure = a * prob_of_failure**k / (a * prob_of_failure**k + (1 - prob_of_failure)**k)
     if runtime_model is None:
         expected_runtime = [0.0] * len(test_X)
     else:
-        expected_runtime = runtime_model.predict(
+        expected_runtime = runtime_model(
             test_X
         ) * runtime_model_stddev + runtime_model_mean
     # best value of y we've seen so far.  i.e. y*
@@ -315,6 +349,9 @@ def next_sample(
         distance = (y_pred - min_norm_y)
         std_dev_distance = (y_pred - min_norm_y) / (y_pred_std + epsilon)
         prob_of_improve = sigmoid(-std_dev_distance)
+        if failure_cost > 0:
+            prob_of_success = 1 - prob_of_failure
+            prob_of_improve *= prob_of_success
         best_test_X_index = np.argmax(prob_of_improve)
         e_i = np.zeros_like(prob_of_improve)
     elif opt_func == "expected_improvement":
@@ -325,7 +362,9 @@ def next_sample(
             Z
         )
         if failure_cost != 0:
-            e_i = e_i * (failure_cost * prob_of_failure + 1 - prob_of_failure) / (1 - prob_of_failure)
+            prob_of_success = 1 - prob_of_failure
+            e_i = e_i * prob_of_success / (prob_of_failure * failure_cost + prob_of_success)
+            #e_i = e_i * (prob_of_failure < failure_cost)
         best_test_X_index = np.argmax(e_i)
     # TODO: support expected improvement per time by dividing e_i by runtime
     suggested_X = test_X[best_test_X_index]
@@ -334,6 +373,7 @@ def next_sample(
     unnorm_y_pred = y_pred * y_stddev + y_mean
     unnorm_y_pred_std = y_pred_std * y_stddev
     unnorm_e_i = e_i * y_stddev
+    suggested_X_prob_of_failure = prob_of_failure[best_test_X_index]
     return (
         suggested_X,
         suggested_X_prob_of_improvement,
@@ -344,6 +384,7 @@ def next_sample(
         unnorm_e_i,
         prob_of_improve,
         prob_of_failure,
+        suggested_X_prob_of_failure,
         expected_runtime,
     )
 
@@ -352,3 +393,112 @@ def target(x):
     return np.exp(-(x - 2) ** 2) + np.exp(-(x - 6) ** 2 / 10) + 1 / (x ** 2 + 1)
 
 
+def test():
+    import matplotlib
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+    from mpl_toolkits.mplot3d import Axes3D
+    from time import sleep
+    
+    def function(X):
+        X = X.copy()
+        X[0] = 1 - X[0]
+        if np.sum(X) <= 1: #np.dot(X, X) <= 1:
+            return -np.dot(X,X) #-np.sum(X).item()
+        else:
+            return float("nan")
+            
+    X_bounds = [(0.0,1.0), (0.0,1.0)]
+    sample_X = []
+    sample_y = []
+    failures = []
+    failure_cost = .5
+    
+    # generate samples
+    print("Generating random samples... ", end='')
+    samples = np.zeros((1000,2))
+    for i in range(1000):
+        print(f"{i:4d}\b\b\b\b", end='')
+        X = np.random.random(size=2)
+        while np.isnan(function(X)):
+            X = np.random.random(size=2)
+        samples[i] = X
+    print("Done.")
+        
+    
+    n_x0 = 40
+    n_x1 = 40
+    X_grid_0, X_grid_1 = np.meshgrid(np.linspace(0,1,n_x0), np.linspace(0,1,n_x1))
+    X_grid = np.stack((X_grid_0, X_grid_1), axis=-1)
+    X_grid_flat = X_grid.reshape(-1,2)
+    
+    # plotting
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    plt.show(block = False)
+    
+    #for i in range(50):
+    cost = 0
+    while True:
+        sample_X_array = np.array(sample_X) if len(sample_X) > 0 else np.zeros((0,0))
+        sample = next_sample(
+            sample_X = sample_X_array,
+            sample_y = sample_y,
+            #X_bounds = X_bounds,
+            test_X = samples,
+            failures = failures,
+            #failure_cost = failure_cost,
+            opt_func = "probability_of_improvement"
+        )
+        next_X = sample[0]
+        next_prob_fail = sample[9]
+        del sample
+        #next_X = np.random.random(size=2)
+        next_y = function(next_X)
+
+        ax.clear()
+        ax.scatter(samples[...,0], samples[...,1], color='black')
+        
+        if len(failures) - sum(failures) >= 2:
+            grid = next_sample(
+                sample_X = sample_X_array,
+                sample_y = sample_y,
+                failures = failures,
+                failure_cost = failure_cost,
+                test_X = X_grid_flat       
+            )
+            y_pred = grid[4].reshape(n_x0, n_x1)
+            prob_fail = grid[8].reshape(n_x0, n_x1)
+            del grid
+            ax.plot_surface(X_grid_0, X_grid_1, -y_pred, facecolors=cm.coolwarm(prob_fail), alpha=.5)
+            #ax.plot_surface(X_grid_0, X_grid_1, prob_fail, facecolors=cm.coolwarm(-y_pred), alpha=.5)  
+        
+        sample_X.append(next_X)
+        sample_y.append(next_y)
+        failures.append(np.isnan(next_y))
+        min_y = np.nanmin(sample_y)
+        cost = cost + (failure_cost if np.isnan(next_y) else 1)
+        
+        #print(next_y, next_prob_fail, min_y)
+        #print(sample_y)
+        print(f"[{cost:.1f}]: X = {tuple(next_X)}, y = {next_y if next_y else 0:.4f}, prob_fail = {next_prob_fail if next_prob_fail else 0:.4f}, min_y = {min_y if min_y else 0:.4f}")
+
+        ax.scatter(np.array(sample_X)[...,0], np.array(sample_X)[...,1], -np.array(sample_y), color='red')
+        plt.show(block = False)
+        if cost >= 40:
+            break     
+        plt.pause(1)
+    
+    #y_func = np.zeros((n_x0, n_x1))
+    #for i in range(n_x0):
+    #    for j in range(n_x1):
+    #        y_func[i,j] = function(X_grid[i,j])
+    #ax.plot_surface(X_grid_0, X_grid_1, y_pred)#y_pred)#, color=prob_fail)
+    #ax.scatter(np.array(sample_X)[...,0], np.array(sample_X)[...,1], np.array(sample_y))
+    #plt.show()
+    
+    input("Press Enter to Exit...")
+
+
+if __name__ == '__main__':
+    test()

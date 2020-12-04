@@ -4,6 +4,7 @@ import sys
 import os
 from collections import defaultdict
 from collections.abc import Mapping
+import numpy as np
 
 # import code for evaluating radial models
 from e3nn.radial import *
@@ -21,6 +22,14 @@ def str_to_secs(s):
     t_strings = s.split(":")
     assert len(t_strings) <= 3, f"Time string '{s}' has too many terms!"
     return sum(eval(n) * 60 ** i for i,n in enumerate(reversed(t_strings)))
+    
+def secs_to_str(t):
+    h = t // (60 * 60)
+    t -= h * 60 * 60
+    m = t // 60
+    t -= m * 60
+    s = round(t)
+    return f"{h}:{m:2d}:{s:2d}"
     
 def get_any(s):
     for e in s:
@@ -144,7 +153,8 @@ class Config:
             return e
 
     def load_section(self, name, store_as=None, **kwargs):
-        section = ConfigSection(self._parser[name], **kwargs)
+        mapping = self._parser[name] if name in self._parser else {}
+        section = ConfigSection(mapping, **kwargs)
         if not store_as:
             store_as = name
         store_as = store_as.replace(" ", "_")
@@ -152,7 +162,8 @@ class Config:
         return section
 
     def load_section_into_base(self, name, **kwargs):
-        section = ConfigSection(self._parser[name], **kwargs)
+        mapping = self._parser[name] if name in self._parser else {}
+        section = ConfigSection(mapping, **kwargs)
         self.__dict__.update(section.items())
         return section.items()
 
@@ -177,13 +188,21 @@ class Config:
                     del section[key]
                     sub_configs.append(key)
         return sub_configs
+        
+    def file_settings(self, filename):
+        fileset = self.by_source[filename]
+        settings = {}
+        for sec_name, file_sec in fileset.items():
+            section = self.__dict__[sec_name]
+            settings[sec_name] = {key:section.__dict__[key] for key in file_sec}
+        return settings
 
     # parses config files
     # later filenames overwrite values from earlier filenames
     # (so you can have mini configs that change just a few settings)
     # automatically includes "training.ini" as first file, unless arg specifies otherwise
     # adds command line arguments to filenames, unless arg specifies otherwise
-    def __init__(self, *filenames, settings=None, use_training_ini=True, use_command_args=True, track_sources=False, _set_names=False):
+    def __init__(self, *filenames, settings=None, use_training_ini=True, use_command_args=True, track_sources=True, _set_names=False):
         if _set_names: # Only here to satisfy pylint and the code highlighter
             self._set_names()
         self._parser = ConfigParser(allow_no_value=True)
@@ -227,6 +246,8 @@ class Config:
         self.load_section('symbols_numbers_dict', key_func=title_case, eval_func=int)
         self.symbol_to_number = {s:n for s,n in self.symbols_numbers_dict.items()}
         self.number_to_symbol = {n:s for s,n in self.symbols_numbers_dict.items()}
+        global number_to_symbol
+        number_to_symbol = self.number_to_symbol
         #print(self.symbol_to_number)
         
         # device, all_elements, relevant_elements
@@ -292,12 +313,14 @@ class Config:
         # training parameters
         self.load_section('training', eval_func=eval,
                 eval_funcs={'save_prefix':str, 'time_limit':str_to_secs, 'run_name':str},
-                defaults={'save_prefix':None, 'resume':False, 'n_epochs':None, 'time_limit':None,
+                defaults={'save_prefix':None, 'resume':False, 'epoch_limit':float('inf'),
+                          'example_limit':float('inf'), 'time_limit':float('inf'),
                           'run_name':None, 'use_wandb':False, 'use_tensor_constraint':False})
+            
         
         # wandb authentication
         if self.training.use_wandb:
-            self.load_section('wandb')
+            self.load_section('wandb', eval_funcs={'interval':eval}, defaults={'interval':1})
 
         # model parameters
         self.load_section('model', eval_func=eval, eval_error=False)
@@ -311,6 +334,19 @@ class Config:
         self.model.kwargs['Rs_in'] = self.model.Rs_in
         self.model.kwargs['Rs_out'] = self.model.Rs_out
         self.max_radius = self.model.max_radius
+
+        # exploration parameters
+        self.load_section('exploration', eval_func=eval,
+                eval_funcs={'seed':(lambda x : np.array(eval(x))), 'time_increment':str_to_secs,
+                             'max_time':str_to_secs},
+                defaults={'seed':None, 'failed':0, 'max_epoch':None, 'max_example':None, 'max_time':None,
+                          'time_increment':None, 'example_increment':None, 'epoch_increment':None,
+                          'inactive':None})
+        if self.exploration.max_example is None and self.exploration.max_epoch is not None:
+            self.exploration.max_example = int(self.exploration.max_epoch * self.data.training_size)
+        if self.exploration.example_increment is None and self.exploration.epoch_increment is not None:
+            self.exploration.example_increment = int(self.exploration.epoch_increment * self.data.training_size)
+        
 
 
     # The only purpose of this section is to get rid of the red squiggly lines from
@@ -358,6 +394,7 @@ class Config:
         self.wandb = SECTION()
         self.wandb.user = ''
         self.wandb.pswd = ''
+        self.wandb.interval = 1
 
         self.model = SECTION()
         self.model.kwargs = {}
@@ -366,17 +403,31 @@ class Config:
         self.model.Rs_out = [ (0,0,0) ]  # one output per atom, rank 0 tensor, even parity
 
         self.training = SECTION()
-        self.training.n_epochs = None             # number of epochs
+        self.training.example_limit = None
+        self.training.epoch_limit = None             # number of epochs
         self.training.time_limit = None
         self.training.batch_size = 0           # minibatch sizes
         self.training.testing_interval = 0     # compute testing loss every n minibatches
         self.training.save_interval = 0  # save model every n minibatches
         self.training.save_prefix = ""   # save checkpoints to files starting with this
+        self.training.run_name = None
         self.training.learning_rate = 0        # learning rate
         self.training.resume = False
         self.training.num_checkpoints = 1
         self.training.use_wandb = False
         self.training.use_tensor_constraint = False
+        
+        self.exploration = SECTION()
+        self.exploration.seed = None
+        self.exploration.max_epoch = None
+        self.exploration.max_example = None
+        self.exploration.max_time = None
+        self.exploration.epoch_increment = None
+        self.exploration.example_increment = None
+        self.exploration.time_increment = None
+        
+        self.active_runs = SECTION()
+        self.abandoned_runs = SECTION()
 
         self.affine_correction = {}
 

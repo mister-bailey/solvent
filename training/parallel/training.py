@@ -124,6 +124,7 @@ def main():
             model_dict = torch.load(model_filename)
             model_kwargs_checkpoint = copy(model_kwargs)
             model_kwargs_checkpoint.update(model_dict['model_kwargs'])
+            model_kwargs_checkpoint['radial_model'] = model_kwargs['radial_model'] # AWFUL HACK!!!
             if model_kwargs != model_kwargs_checkpoint:
                 if input("Loaded model doesn't match config file! Build new model and overwrite old? (y/n) ").lower().strip() != 'y':
                     exit()
@@ -165,7 +166,6 @@ def main():
     print("\n=== Configuration ===\n")
     print("all_elements:            ", all_elements)
     print("relevant_elements:       ", config.relevant_elements)
-    print("jiggles_per_molecule:    ", config.data.jiggles_per_molecule)
     print("testing_size:            ", config.data.testing_size)
     print("training_size:           ", config.data.training_size)
     print("n_molecule_processors:   ", config.data.n_molecule_processors)
@@ -174,7 +174,8 @@ def main():
     print("batch_queue_cap:         ", config.data.batch_queue_cap)
     print("Rs_in:                   ", Rs_in)
     print("Rs_out:                  ", Rs_out)
-    print("n_epochs:                ", config.training.n_epochs)
+    print("epoch_limit:             ", config.training.epoch_limit)
+    print("time_limit:              ", config.training.time_limit)
     print("batch_size:              ", config.training.batch_size)
     print("testing_interval:        ", config.training.testing_interval)
     print("save_interval:           ", config.training.save_interval)
@@ -376,39 +377,51 @@ def main():
         wandb.config.use_tensor_constraint = config.training.use_tensor_constraint
 
     wandb_log = wandb.log if use_wandb else None
+    wandb_interval = config.wandb.interval if use_wandb else None
     use_tensor_constraint = config.training.use_tensor_constraint
 
     if resume:
         try:
-            history = TrainTestHistory.load(
-                testing_batches, prefix=save_prefix, wandb_log=wandb_log)
+            history = TrainTestHistory(
+                testing_batches, examples_per_epoch=training_size,
+                device=device, save_prefix=save_prefix, wandb_log=wandb_log,
+                wandb_interval=wandb_interval, hdf5=True, load=True)
             start_epoch = history.train.current_epoch()
             example_in_epoch = history.train.next_example_in_epoch()
+            example = history.train.example[-1]
+            elapsed_time = history.train.elapsed_time[-1]
             batch_in_epoch = history.train.next_batch_in_epoch()
             print("Resuming from prior training...")
             print(f"     start_epoch = {start_epoch}")
             print(f"   example_in_epoch = {example_in_epoch}")
             print(f"  batch_in_epoch = {batch_in_epoch}")
-            partial_epoch = True
+            partial_epoch = example_in_epoch > 0
         except Exception as e:
             print(
                 f"Failed to load history from {save_prefix + '-history.torch'}")
             print(e)
             if input("Continue training with old model but new training history? (y/n) ").lower().strip() != 'y':
                 print("Exiting...")
+                pipeline.close()
+                raise
                 exit()
             resume = False
     if not resume:
-        history = TrainTestHistory(training_size, batch_size, testing_batches, relevant_elements, device,
-                                   save_prefix, run_name, config.number_to_symbol,
-                                   use_tensor_constraint=use_tensor_constraint, sparse_logging=True,
-                                   wandb_log=wandb_log)
+        history = TrainTestHistory(
+            testing_batches, device=device, examples_per_epoch=training_size,
+            relevant_elements=relevant_elements, run_name=run_name,
+            use_tensor_constraint=use_tensor_constraint,
+            wandb_log=wandb_log, wandb_interval=wandb_interval,
+            save_prefix=save_prefix, hdf5=True, load=False)
         partial_epoch = False
         start_epoch = 1
+        example = 0
+        elapsed_time = 0.0
 
     ### training ###
     print("\n=== Training ===")
-    n_epochs = config.training.n_epochs
+    example_limit = config.training.example_limit
+    epoch_limit = config.training.epoch_limit
     time_limit = config.training.time_limit
     testing_interval = config.training.testing_interval
     save_interval = config.training.save_interval
@@ -424,16 +437,19 @@ def main():
 
     data_queue = deque(maxlen=preload)
     
+    finish_training = False
+    exit_message = "No exit message provided!"
+    
     # exit code
     def finish(exit_code=0):
         print("Cleaning up...")
+        history.close()
         if os.name == 'nt':
             listener.stop()
         pipeline.close()
         print(f"Exiting with exit code {exit_code}.")
         exit(exit_code)    
     
-    abort = False
     if os.name == 'nt':
         # keyboard abort code
         # press q to abort after current training iteration
@@ -446,9 +462,8 @@ def main():
         listener = keyboard.Listener(on_press=hotkey.press, on_release=hotkey.release)
         listener.start()
     
-    for epoch in range(start_epoch, start_epoch + n_epochs):
-        print("                                                                                                ")
-        print(("Resuming" if partial_epoch else "Starting") +
+    for epoch in range(start_epoch, epoch_limit + 1):
+        print("\n" + ("Resuming" if partial_epoch else "Starting") +
               f" epoch {epoch}...", end="\r", flush=True)
 
         # though we may start partway through an epoch, subsequent epochs start at example 0 and batch 1
@@ -458,17 +473,14 @@ def main():
             example_in_epoch = 0
             batch_in_epoch = 1
 
-        batch_of_last_test = (
-            batch_in_epoch // testing_interval) * testing_interval
-        batch_of_last_save = (batch_in_epoch // save_interval) * save_interval
+        batch_of_last_test = (batch_in_epoch // testing_interval) * testing_interval + 1
+        batch_of_last_save = (batch_in_epoch // save_interval) * save_interval + 1
 
-        # return to the start of the training set
+        # start reading at example_in_epoch
         pipeline.scan_to(example_in_epoch)
+        pipeline.start_reading(training_size - example_in_epoch, batch_size=dist_batch_size)
 
-        pipeline.start_reading(
-            training_size - example_in_epoch, batch_size=dist_batch_size)
-
-        # iterate through all training examples
+        # loop while any batches are still to come in this epoch
         while pipeline.any_coming() or len(data_queue) > 0:
 
             time1 = time.time()
@@ -487,13 +499,16 @@ def main():
                 else:
                     finish(4)
             train_time = time.time() - time1
+            elapsed_time += train_time
 
             n_examples = min(batch_size, training_size - example_in_epoch)
             example_in_epoch += n_examples
+            example += n_examples
             batch_in_epoch += 1
             
-            history.train.log_batch(train_time, t_wait, n_examples, len(
-                data.x) * config.gpus, example_in_epoch, None, *train_losses, epoch=epoch)
+            history.train.log_batch(
+                train_time, t_wait, n_examples, len(data.x) * config.gpus, elapsed_time,
+                example_in_epoch, example, *train_losses, epoch=epoch)
 
             if config.parallel and test_key is not None and test_index < 10:
                 test_rank = (test_index % (config.gpus-1)) + 1
@@ -510,16 +525,26 @@ def main():
                 batch_of_last_test = batch_in_epoch
                 history.run_test(model)
 
-            times_up = time_limit is not None and history.elapsed_time() - \
-                start_elapsed >= time_limit
+            if elapsed_time >= time_limit:
+                finish_training = True
+                exit_message = f"Finished after {str(timedelta(seconds=history.elapsed_time() - start_elapsed))[:-5]} elapsed training time."
             
+            if example >= example_limit:
+                finish_training = True 
+                exit_message = f"Finished after training {example} examples, or {(example/training_size):.2f} epochs."
+                
             if os.name == 'nt':
-                abort = abort_lock.acquire(blocking=False)
+                if abort_lock.acquire(blocking=False):
+                    flush_input()
+                    if input("\nAbort training run? (y/n) ").lower().strip() == 'y':
+                        finish_training = True
+                        exit_message = "Aborting training..."
             if os.path.isfile(os.path.join(save_dir, "kill.file")):
                 os.remove(os.path.join(save_dir, "kill.file"))
-                abort = 2
+                finish_training = True
+                exit_message = "Aborting training..."
 
-            if batch_in_epoch - batch_of_last_save >= save_interval or not pipeline.any_coming() or times_up or abort:
+            if batch_in_epoch - batch_of_last_save >= save_interval or not pipeline.any_coming() or finish_training:
                 batch_of_last_save = batch_in_epoch
                 checkpoint_filename = f"{save_prefix}-e{epoch:03d}_b{batch_in_epoch:05}-checkpoint.torch"
                 save_checkpoint(model_kwargs, model,
@@ -528,18 +553,12 @@ def main():
                 if num_checkpoints:
                     cull_checkpoints(save_prefix, num_checkpoints)
 
-            if times_up:
-                print(f"\nFinished training for {str(timedelta(seconds=history.elapsed_time() - start_elapsed))[:-5]}.")
+            if finish_training:
+                print("\n" + exit_message)
                 finish()
             
-            if abort:
-                flush_input()
-                if abort == 2 or input("\nAbort training run? (y/n) ").lower().strip() == 'y':
-                    print(f"Aborting training run.")
-                    finish()            
-            
 
-    print(f"\nFinished training {n_epochs} epochs.")
+    print(f"\nFinished training {epoch_limit} epochs.")
     finish()
 
 # auxiliary training processes (not the main one)
