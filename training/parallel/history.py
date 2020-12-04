@@ -9,43 +9,97 @@ import time
 import bisect
 from datetime import timedelta
 from training_utils import loss_function
-from training_config import Config
+import training_config as config
 from pipeline import Molecule
-from resizable import Array
+from resizable import H5Array as Array
+import os
+from shutil import copyfile
+import h5py
 
 
 class TrainTestHistory:
-    def __init__(self, examples_per_epoch, examples_per_batch, testing_batches, relevant_elements, device,
-                 save_prefix, run_name, number_to_symbol=None, smoothing_window=10, failed=0, use_tensor_constraint=False, store_residuals=False,
-                 sparse_logging=True, wandb_log=None):
-        if sparse_logging:
-            self.train = SparseTrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, failed, use_tensor_constraint, wandb_log)
-        else:
-            self.train = TrainingHistory(examples_per_epoch, examples_per_batch, smoothing_window, failed, use_tensor_constraint, wandb_log)
-        self.test = TestingHistory(examples_per_epoch, testing_batches, relevant_elements, device, failed,
-                                  number_to_symbol=number_to_symbol, store_residuals=store_residuals, wandb_log=wandb_log)
-        self.failed = failed
-        self.save_prefix = save_prefix
-        self.name = run_name
-    
-    # save raw data
-    def save(self, file=None):
-        if file is None:
-            file = f"{self.save_prefix}-history.torch"
-        print("Saving train/test history... ", end="", flush=True)
-        torch.save(self, file)
-        print("Done.", end="\r", flush=True)
+    def __init__(self, testing_batches=[], device='cuda', examples_per_epoch=None, relevant_elements=None, 
+                 run_name=None, number_to_symbol=None, smoothing_window=10, failed=0,
+                 use_tensor_constraint=False, store_residuals=False, sparse_logging=True,
+                 wandb_log=None, file=None, save_prefix=None, hdf5=True, use_backup=True, load=True):
+        assert hdf5, "Non-hdf5 histories not currently working."
+        self.hdf5 = hdf5
+        self.use_backup = use_backup
 
-    @staticmethod
-    def load(testing_batches=[], file=None, prefix=None, wandb_log=None):
-        if file is None:
-            file = prefix + "-history.torch"
-        h = torch.load(file)
-        assert isinstance(h, TrainTestHistory), f"File {file} doesn't contain a train/test history!"
-        h.test.testing_batches = testing_batches
-        h.test.wandb_log = wandb_log
-        h.train.wandb_log = wandb_log
-        return h
+        self.file = file
+        if file is None and save_prefix is not None:
+            self.file = f"{save_prefix}-history.torch"
+        if isinstance(self.file, str) and not os.path.isfile(self.file) and not os.path.isfile(self.file + '.bak'):
+            load = False
+
+        if not load:
+            # create new history file
+            if not isinstance(self.file, h5py.File):
+                self.file = h5py.File(self.file, 'w')
+            backup = self.file.filename + '.bak'
+            if os.path.isfile(backup):
+                os.remove(backup)
+                
+            if sparse_logging:
+                self.train = SparseTrainingHistory(
+                    examples_per_epoch, smoothing_window, failed, use_tensor_constraint,
+                    wandb_log=wandb_log, file=self.file, hdf5=hdf5, load=False)
+            else:
+                raise ValueError("Currently only SparseTrainingHistory is working.")
+                self.train = TrainingHistory(examples_per_epoch, smoothing_window, failed, use_tensor_constraint, wandb_log)
+            self.test = TestingHistory(examples_per_epoch, testing_batches, relevant_elements, device, failed,
+                                    number_to_symbol=number_to_symbol, store_residuals=store_residuals, wandb_log=wandb_log)
+            self.failed = failed
+            self.file.attrs['failed'] = failed
+            self.name = run_name
+            self.file.attrs['name'] = run_name
+
+        else:
+            # load history from file
+            if not isinstance(self.file, h5py.File):
+                self.file = h5py.File(self.file, 'a')
+            filename = self.file.filename
+            if os.path.isfile(filename + '.bak'):
+                print("History file failed to close properly last time!")
+                if input("Restore from backup? (y/n) ").strip().lower() == 'y':
+                    self.file.close()
+                    os.remove(filename)
+                    os.rename(filename + '.bak', filename)
+                    self.file = h5py.File(filename, 'a')
+                    
+            self.failed = self.file.attrs['failed']
+            self.name = self.file.attrs['name']
+            self.examples_per_epoch = self.file.attrs['examples_per_epoch']
+            self.sparse_logging = self.file.attrs['sparse_logging']
+            if self.sparse_logging:
+                self.train = SparseTrainingHistory(
+                    self.examples_per_epoch, failed=self.failed,
+                    use_tensor_constraint=self.file.attrs['use_tensor_constraint'],
+                    wandb_log=wandb_log, file=self.file['train'], hdf5=True, load=True)
+            else:
+                raise ValueError("Currently only SparseTrainingHistory is fully implemented.")
+            self.test = TestingHistory(
+                self.examples_per_epoch, testing_batches=testing_batches, device=device, failed=self.failed,
+                wandb_log=wandb_log, file=self.file['test'], hdf5=True, load=True)
+            
+            if os.path.isfile(filename + '.bak'):
+                os.remove(filename + '.bak')
+    
+    def save(self, verbose = True):
+        assert self.hdf5, "Non-hdf5 histories not currently working."
+        print("Saving " + ("and backing up " if self.use_backup else "") + "history...")
+        self.file.flush()
+        if self.use_backup:
+            copyfile(self.file.filename, self.file.filename + ".bak")
+        
+    def close(self, verbose = True):
+        self.save()
+        self.file.close()
+        if self.use_backup:
+            backup = self.file.filename + '.bak'
+            os.remove(backup)
+                
+            
 
     def plot(self, figure=None, x_axis='batch_number', y_axis='smoothed_loss'): # x_axis = 'time' is also allowed
         if figure is None:
@@ -91,46 +145,67 @@ class BaseHistory:
         
 
 class TrainingHistory(BaseHistory):
-    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, failed=0, use_tensor_constraint=False, wandb_log=None):
+    def __init__(self, examples_per_epoch, smoothing_window=10, failed=0, use_tensor_constraint=False,
+                 wandb_log=None, file=None, hdf5=True, load=True):
         self.examples_per_epoch = examples_per_epoch
-        self.examples_per_batch = examples_per_batch
-        self.batches_per_epoch = math.ceil(examples_per_epoch / examples_per_batch)
-        self.smoothing_window = smoothing_window
         self.failed = failed
         self.wandb_log = wandb_log
-
-        # initialize the lists we will be accumulating
-        # these lists correspond to each other
-        # one entry per batch
-        # batch 0 is a dummy batch
-        self.epoch=Array([0])
-
-        # batch n covers example[example_number[n-1]:example_number[n]]
-        self.example_in_epoch=Array([examples_per_epoch])
-        self.example=Array([0])
+        self.file = file
         
-        self.examples_in_batch=Array([0])
+        if hdf5:
+            if not load:
+                self.smoothing_window = smoothing_window
+                file.attrs['smoothing_window'] = smoothing_window
 
-        self.batch_in_epoch=Array([0])
-        self.elapsed_time=Array([0.0])
+                # initialize the lists we will be accumulating
+                # these lists correspond to each other
+                # one entry per batch
+                # batch 0 is a dummy batch
+                self.epoch=Array(file, 'epoch', [0])
 
-        self.atoms_in_batch=Array([0])
+                # batch n covers example[example_number[n-1]:example_number[n]]
+                self.example_in_epoch=Array(file, 'example_in_epoch', [examples_per_epoch])
+                self.example=Array(file, 'example', [0])
+                
+                self.examples_in_batch=Array(file, 'examples_in_batch', [0])
 
-        self.loss=Array([float("inf")])
-        self.smoothed_loss=Array([float("inf")])
-        
-        if use_tensor_constraint:
-            self.tensor_loss=Array([float("inf")])
-            self.smoothed_tensor_loss=Array([float("inf")])
+                self.batch_in_epoch=Array(file, 'batch_in_epoch', [0])
+                self.elapsed_time=Array(file, 'elapsed_time', [0.0])
 
-        # this list has one entry per epoch
-        # epoch e starts at index epoch_start[e]
-        self.epoch_start=Array([0]) # includes a dummy epoch 0 starting at batch 0
+                self.atoms_in_batch=Array(file, 'atoms_in_batch', [0])
+
+                self.loss=Array(file, 'loss', [float("inf")])
+                self.smoothed_loss=Array(file, 'smoothed_loss', [float("inf")])
+                
+                if use_tensor_constraint:
+                    self.tensor_loss=Array(file, 'tensor_loss', [float("inf")])
+                    self.smoothed_tensor_loss=Array(file, 'smoothed_tensor_loss', [float("inf")])
+
+                # this list has one entry per epoch
+                # epoch e starts at index epoch_start[e]
+                self.epoch_start=Array(file, 'epoch_start', [0]) # includes a dummy epoch 0 starting at batch 0
+            else:
+                self.smoothing_window = file.attrs['smoothing_window']
+                self.epoch=Array(file, 'epoch')
+                self.example_in_epoch=Array(file, 'example_in_epoch')
+                self.example=Array(file, 'example')               
+                self.examples_in_batch=Array(file, 'examples_in_batch')
+                self.batch_in_epoch=Array(file, 'batch_in_epoch')
+                self.elapsed_time=Array(file, 'elapsed_time')
+                self.atoms_in_batch=Array(file, 'atoms_in_batch')
+                self.loss=Array(file, 'loss')
+                self.smoothed_loss=Array(file, 'smoothed_loss')              
+                if use_tensor_constraint:
+                    self.tensor_loss=Array(file, 'tensor_loss')
+                    self.smoothed_tensor_loss=Array(file, 'smoothed_tensor_loss')
+                self.epoch_start=Array(file, 'epoch_start') 
+        else:
+            raise ValueError("Non-hdf5 histories not currently working.")
 
 
 
-    def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, scalar_loss, tensor_loss=None,
-                  epoch=None, batch_in_epoch=None, verbose=True):
+    def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, scalar_loss,
+                  tensor_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
 
         # if you don't provide batch numbers or epoch numbers, we will make reasonable assumptions:
         epoch = self.current_epoch() if epoch is None else epoch
@@ -191,6 +266,10 @@ class TrainingHistory(BaseHistory):
         wraps around to 1 if epoch ends
         """
         return 1 if self.example_in_epoch[batch] >= self.examples_per_epoch else self.batch_in_epoch[batch] + 1
+        
+    @property
+    def examples_per_batch(self):
+        return self.examples_in_batch[-1]
 
     def batches_remaining_in_epoch(self, batch=-1):
         return math.ceil((self.examples_per_epoch - self.example_in_epoch[batch]) / self.examples_per_batch)
@@ -228,10 +307,11 @@ class SparseTrainingHistory(TrainingHistory):
     
     """    
     
-    def __init__(self, examples_per_epoch, examples_per_batch, smoothing_window=10, failed=0, use_tensor_constraint=False, wandb_log=None):
-        super().__init__(examples_per_epoch, examples_per_batch, smoothing_window, failed, use_tensor_constraint, wandb_log)
+    def __init__(self, examples_per_epoch, smoothing_window=10, failed=0, use_tensor_constraint=False,
+                 wandb_log=None, file=None, hdf5=True, load=True):
+        super().__init__(examples_per_epoch, smoothing_window, failed, use_tensor_constraint, wandb_log,
+                         file=None, hdf5=True, load=True)
         
-
 
     def log_batch(self, batch_time, wait_time, examples_in_batch, atoms_in_batch, example_in_epoch,
                   example, scalar_loss, tensor_loss=None, epoch=None, batch_in_epoch=None, verbose=True):
@@ -305,25 +385,57 @@ class SparseTrainingHistory(TrainingHistory):
 class TestingHistory(BaseHistory):
 
     # training_window_size: moving average for training_loss over this many minibatches
-    def __init__(self, examples_per_epoch, testing_batches, relevant_elements, device,
-                 failed=0, number_to_symbol=None, store_residuals=False, wandb_log=None):
+    def __init__(self, examples_per_epoch, testing_batches, relevant_elements=None, device='cuda',
+                 failed=0, number_to_symbol=None, store_residuals=False, wandb_log=None,
+                 file=None, hdf5=True, load=True):
         self.examples_per_epoch = examples_per_epoch
         self.testing_batches = testing_batches
         self.device = device
         self.failed = failed
-        self.relevant_elements = relevant_elements
-        self.number_to_symbol = number_to_symbol if number_to_symbol else Config().number_to_symbol
-        self.store_residuals = store_residuals
+        self.number_to_symbol = number_to_symbol if number_to_symbol else config.number_to_symbol
         self.wandb_log = wandb_log
 
+        assert hdf5, "Non-hdf5 histories not working right now."
+        if not load:
+            self.relevant_elements = relevant_elements
+            file.attrs['relevant_elements'] = relevant_elements
+            self.store_residuals = store_residuals
+            file.attrs['store_residuals'] = store_residuals
+
+            # initialize the lists we will be accumulating
+            self.batch_number = Array(file, 'batch_number', dtype=int)
+            self.epoch = Array(file, 'epoch', dtype=int)
+            self.batch_in_epoch = Array(file, 'batch_in_epoch', dtype=int)
+            self.example_in_epoch = Array(file, 'example_in_epoch', dtype=int)
+            self.example = Array(file, 'example', dtype=int)
+            self.elapsed_time = Array(file, 'elapsed_time', dtype=float)
+            self.loss = Array(file, 'loss', dtype=float)
+            self.mean_error_by_element = Array(file, 'mean_error_by_element', (0,len(relevant_elements)), dtype=float)
+            self.RMSE_by_element = Array(file, 'RMSE_by_element', (0,len(relevant_elements)), dtype=float)
+        else:
+            self.store_residuals = file.attrs['relevant_elements']
+            self.store_residuals = file.attrs['store_residuals']
+
+            self.batch_number = Array(file, 'batch_number')
+            self.epoch = Array(file, 'epoch')
+            self.batch_in_epoch = Array(file, 'batch_in_epoch')
+            self.example_in_epoch = Array(file, 'example_in_epoch')
+            self.example = Array(file, 'example')
+            self.elapsed_time = Array(file, 'elapsed_time')
+            self.loss = Array(file, 'loss')
+            self.mean_error_by_element = Array(file, 'mean_error_by_element')
+            self.RMSE_by_element = Array(file, 'RMSE_by_element')
+            
+
+
         # for each relevant element, gives you a list of atom indices in the testing set
-        atom_indices = {e:[] for e in relevant_elements}
+        atom_indices = {e:[] for e in self.relevant_elements}
         atom_index = 0
         for batch in testing_batches:
             atomic_numbers = Molecule.get_atomic_numbers(batch.x)
             for e in atomic_numbers:
                 e = e.item()
-                if e in relevant_elements:
+                if e in self.relevant_elements:
                     atom_indices[e].append(atom_index)
                 atom_index += 1
         self.atom_indices = {e:np.array(ai) for e,ai in atom_indices.items()}
@@ -331,17 +443,6 @@ class TestingHistory(BaseHistory):
         # precompute weight per testing batch and total testing weight
         self.batch_weights = torch.tensor([torch.sum(batch.weights) for batch in testing_batches])
         self.total_weight = sum(self.batch_weights)
-
-        # initialize the lists we will be accumulating
-        self.batch_number = Array(dtype=int)
-        self.epoch = Array(dtype=int)
-        self.batch_in_epoch = Array(dtype=int)
-        self.example_in_epoch = Array(dtype=int)
-        self.example = Array(dtype=int)
-        self.elapsed_time = Array(dtype=float)
-        self.loss = Array(dtype=float)
-        self.mean_error_by_element = []
-        self.RMSE_by_element = []
 
     def max_batch(self):
         return self.batch_number[-1]
@@ -383,8 +484,8 @@ class TestingHistory(BaseHistory):
         residuals_by_element = {e:residuals[self.atom_indices[e]] for e in self.relevant_elements}
 
         # compute mean errors and RMSEs
-        mean_error_by_element = {e:residuals_by_element[e].mean() for e in self.relevant_elements}
-        RMSE_by_element = {e:residuals_by_element[e].square().mean().sqrt() for e in self.relevant_elements}
+        mean_error_by_element = [residuals_by_element[e].mean() for e in self.relevant_elements]
+        RMSE_by_element = [residuals_by_element[e].square().mean().sqrt() for e in self.relevant_elements]
 
         time1 = time.time()
         test_time = time1 - time0
@@ -393,8 +494,8 @@ class TestingHistory(BaseHistory):
             print(f"  Test loss = {loss:6.3f}   Test time = {test_time:.2f}")
             print(f"  Element   Mean Error    RMSE")
             #print(f"<4> Ee  <7>  012.345 <5> 012.345")
-            for e in self.relevant_elements:
-                print(f"    {self.number_to_symbol[e].rjust(2)}       {mean_error_by_element[e]:3.3f}     {RMSE_by_element[e]:3.3f}")
+            for i, e in self.relevant_elements:
+                print(f"    {self.number_to_symbol[e].rjust(2)}       {mean_error_by_element[i]:3.3f}     {RMSE_by_element[i]:3.3f}")
 
         if log:
             if example is None:
