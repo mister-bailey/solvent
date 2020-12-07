@@ -79,7 +79,8 @@ class TrainTestHistory:
             self.train = TrainingHistory(
                 examples_per_epoch, failed=self.failed,
                 use_tensor_constraint=self.file.attrs['use_tensor_constraint'],
-                wandb_log=wandb_log, file=self.file['train'], hdf5=True, load=True)
+                wandb_log=wandb_log, wandb_interval=wandb_interval, 
+                file=self.file['train'], hdf5=True, load=True)
             self.test = TestingHistory(
                 examples_per_epoch, testing_batches=testing_batches, device=device, failed=self.failed,
                 wandb_log=wandb_log, file=self.file['test'], hdf5=True, load=True)
