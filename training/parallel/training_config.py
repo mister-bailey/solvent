@@ -313,7 +313,7 @@ class Config:
         # training parameters
         self.load_section('training', eval_func=eval,
                 eval_funcs={'save_prefix':str, 'time_limit':str_to_secs, 'run_name':str},
-                defaults={'save_prefix':None, 'resume':False, 'epoch_limit':float('inf'),
+                defaults={'save_prefix':None, 'resume':False, 'epoch_limit':1000000000,
                           'example_limit':float('inf'), 'time_limit':float('inf'),
                           'run_name':None, 'use_wandb':False, 'use_tensor_constraint':False})
             
