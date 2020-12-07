@@ -563,6 +563,7 @@ def main():
 
 # auxiliary training processes (not the main one)
 def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_state_dict=None, optimizer_state_dict=None, preload=1, test_key=None):
+  try:
     rank += 1  # We already have a "main" process which should take rank 0
     print(f"GPU rank {rank} reporting for duty.")
 
@@ -617,6 +618,9 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
             dist.barrier()
             if verbose and test_rank == rank: print(f"\n[{rank}]: sending test params ... ", flush=True)  
             dist.broadcast(model.state_dict()[test_key], src=test_rank)
+  except Exception as e:
+    print(f"Auxiliary training process {rank} raised an exception:")
+    print(e)
 
 def flush_input():
     try:
