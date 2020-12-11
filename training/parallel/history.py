@@ -482,8 +482,11 @@ class TestingHistory(BaseHistory):
                 'example':example,
                 'elapsed_time':elapsed_time,
                 'test_loss':loss,
-                'mean_error_by_element':mean_error_by_element,
-                'RMSE_by_element':RMSE_by_element})
+                'mean_error_by_element':{
+                    e:mean_error_by_element[i].item() for i, e in enumerate(self.relevant_elements)},
+                'RMSE_by_element':{
+                    e:RMSE_by_element[i].item() for i, e in enumerate(self.relevant_elements)}
+                })
                 
     def smoothed_loss(self, i, window=5):
         i = len(self.loss) - i if i < 0 else i
