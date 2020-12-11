@@ -96,22 +96,28 @@ class TrainTestHistory:
             copyfile(self.file.filename, self.file.filename + ".bak")
         
     def close(self, verbose = True):
+        if self.file is None:
+            return
         self.save()
         filename = self.file.filename
         self.file.close()
         if self.use_backup:
             backup = filename + '.bak'
             os.remove(backup)
+        self.file = None
                 
             
 
-    def plot(self, figure=None, x_axis='batch_number', y_axis='smoothed_loss'): # x_axis = 'time' is also allowed
+    def plot(self, figure=None, x_axis='batch_number', y_axis='smoothed_loss', show=True):
+        # x_axis = 'time' is also allowed
         if figure is None:
             plt.figure(figsize=(12,8))
         self.train.plot(figure, x_axis, y_axis)
         self.test.plot(figure, x_axis)
         if figure is None:
             plt.legend(loc="best")
+            if show:
+                plt.show()
 
     def log_batch(self, *args, **kwargs):
         self.train.log_batch(*args, **kwargs)
@@ -308,7 +314,7 @@ class TrainingHistory(BaseHistory):
         return len(self.loss) - 1
         
     # x_axis = 'time' and y_axis = 'loss' are also allowed
-    def plot(self, figure=None, x_axis='example', y_axis='smoothed_loss'):
+    def plot(self, figure=None, x_axis='example', y_axis='smoothed_loss', show=True):
         x_axis = self.example[1:] if x_axis=='example' else self.elapsed_time[1:]
         y_axis = self.smoothed_loss[1:] if y_axis=='smoothed_loss' else self.loss[1:]
         
@@ -317,6 +323,8 @@ class TrainingHistory(BaseHistory):
         plt.plot(np.array(x_axis), np.array(y_axis), "ro-", label="train")
         if figure is None:
             plt.legend(loc="best")
+            if show:
+                plt.show()
             
     def __getstate__(self):
         d = self.__dict__.copy()
@@ -368,6 +376,10 @@ class TestingHistory(BaseHistory):
             self.mean_error_by_element = Array(file, 'mean_error_by_element')
             self.RMSE_by_element = Array(file, 'RMSE_by_element')
 
+        # if we have no testing batches, we won't be running tests, so no need to prep
+        if not testing_batches:
+            return
+
         # for each relevant element, gives you a list of atom indices in the testing set
         atom_indices = {e:[] for e in self.relevant_elements}
         atom_index = 0
@@ -387,13 +399,15 @@ class TestingHistory(BaseHistory):
     def max_batch(self):
         return self.batch_number[-1]
         
-    def plot(self, figure=None, x_axis='example'): # x_axis = 'time' is also allowed
+    def plot(self, figure=None, x_axis='example', show=True): # x_axis = 'time' is also allowed
         x_axis = self.example if x_axis=='example' else self.elapsed_time
         if figure is None:
             plt.figure(figsize=(12,8))
         plt.plot(np.array(x_axis), np.array(self.loss), "bo-", label="test")
         if figure is None:
             plt.legend(loc="best")
+            if show:
+                plt.show()
 
     def run_test(self, model, batch_number, epoch, batch_in_epoch, example_in_epoch, example, elapsed_time, verbose=True, log=True):
         if verbose: print("")

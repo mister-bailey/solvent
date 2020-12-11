@@ -1,4 +1,4 @@
-from training_config import Config, secs_to_str
+from training_config import Config, secs_to_str, update, immut
 from configparser import ConfigParser
 import os
 import sys
@@ -8,48 +8,45 @@ import random
 from history import TrainTestHistory
 import bayes_search as bayes
 from training_policy import proceed_with_training, next_training_limit
+from sample_hyperparameters import TrainableSampleGenerator
+import numpy as np
 
 class TrainingRun:
-    def __init__(self, parent_dir="runs/", identifier=None, config_file=None, settings={},
+    def __init__(self, parent_dir="runs", identifier=None, config_file=None, settings={},
                  create_file=True, create_identifier=True, parent_configs=['exploration.ini']):
         self.parent_configs = parent_configs
-        self.settings = {k:str(v) for k,v in settings.items()} # may need to allow alternate string conversions
+        #self.settings = {k:str(v) for k,v in settings.items()} # may need to allow alternate string conversions
 
         if identifier is None:
             if settings != {} and create_identifier:
-                self.identifier = "run-" + hex(hash(settings))[-8:]
-                if os.path.isdir(identifier):
+                identifier = "run-" + hex(hash(immut(settings)))[-8:]
+                if os.path.isdir(os.path.join(parent_dir, identifier)):
                     raise Exception(f"Hash collision with existing training run {identifier}")
             else:
                 raise Exception("No training run identifier provided!")
         self.identifier = identifier
 
-        self.run_dir = parent_dir + identifier + "/"
+        self.run_dir = os.path.join(parent_dir, identifier)
         os.makedirs(self.run_dir, exist_ok=True)
-        self.save_prefix = self.run_dir + identifier[:7]
+        self.save_prefix = os.path.join(self.run_dir, identifier[:7])
 
-        settings = {'training':{'save_prefix':self.save_prefix, 'resume':True}}
+        settings = update(settings, {'training':{'save_prefix':self.save_prefix, 'resume':True}})
 
         if config_file is None:
-            config_file = self.run_dir + "training.ini"
+            config_file = os.path.join(self.run_dir, "training.ini")
         self.config_file = config_file
-
-        parser = ConfigParser(allow_no_value=True)
-        if os.path.isfile(self.config_file):
-            parser.read(self.config_file)
-        if settings != {}:
-            parser.read_dict(settings)
-            parser.write(self.config_file)
+        self.set_config(settings)
 
         self.__history = None
-        self.__local_config = None
-        self.__config = None
         
     @property
     def history(self):
         if self.__history is None:
             if os.path.isfile(self.save_prefix + "-history.torch"):
-                self.__history = TrainTestHistory(save_prefix = self.save_prefix, load=True, use_backup=False)
+                try:
+                    self.__history = TrainTestHistory(save_prefix = self.save_prefix, load=True, use_backup=False)
+                except:
+                    self.__history = None
         return self.__history
         
     def close_history(self):
@@ -71,10 +68,11 @@ class TrainingRun:
         return self.__local_config
     
     def set_config(self, settings):
-        parser = ConfigParser()
+        parser = ConfigParser(allow_no_value=True)
         parser.read([self.config_file])
         parser.read_dict(settings)
-        parser.write(self.config_file)
+        with open(self.config_file, 'w') as f:
+            parser.write(f)
         self.__config = None
         self.__local_config = None
         
@@ -99,39 +97,109 @@ class TrainingRun:
     #    parser.read_dict(settings)
         
         
-    def execute_run(self, configs=[]):
+    def execute_run(self, configs=[], stub=False):
         self.close_history()
-        configs = self.parent_configs + [self.config_file] + configs
         print("\n==============================================")
         print(f"Run {self.identifier}:")
         print(f"      run dir: {self.run_dir}")
         print(f"  save_prefix: {self.save_prefix}")
         print(f"  config file: {self.config_file}")
         print("----------------------------------------------\n")
+        if stub:
+            self.execute_stub()
+            return 0
+        configs = self.parent_configs + [self.config_file] + configs
         self.last_execution = subprocess.run("python training.py " + " ".join(configs),
                               input=b"y\ny\ny\ny\n")
         return self.last_execution
+        
+    def execute_stub(self):
+        # generates histories based on a simulated loss curve
+        # logs simulated batches of 1000 examples
+        # batch time is l^2 * muls summed over layers
+        # loss is an exponential with decay speed l^2 * muls for max layer
+        # and asymptote l * muls summed over layers
+        
+        ls = [list(range(lmax + 1)) for lmax in self.config.model.lmaxes]
+        muls = self.config.model.muls
+        lmuls = [list(zip(li, mi)) for li,mi in list(zip(ls,muls))]
+        print(lmuls)
+        
+        batch_time = sum(sum(l**2 * m for l,m in layer) for layer in lmuls)
+        asymptote = sum(sum((l+1) * m for l,m in layer) for layer in lmuls) / 100
+        decay = max(sum((l+1)**2 * m for l,m in layer) for layer in lmuls) / 1000000
+        print(f"Batch time = {batch_time:.2f}, asymptote = {asymptote:.3f}, decay = {decay}")
+        
+        if self.history is None:
+            self.__history = TrainTestHistory(
+                examples_per_epoch=1000000, relevant_elements=[6,1],
+                save_prefix = self.save_prefix, run_name=self.identifier,
+                load=False, use_backup=False)
+        
+        epoch = self.epochs
+        time = self.time
+        example = self.examples
+        while True:
+            example += 1000
+            time += batch_time
+            epoch = example // self.config.data.training_size + 1
+            
+            test_loss = (math.exp(-example * decay) + asymptote) * (.9 + .2 * random.random())
+            train_loss = test_loss * (.9 + .2 * random.random())
+            RMSE = np.array([1.5 * test_loss, .5 * test_loss])
+            mean_error = RMSE * (np.random.random(2) - .5)
+            
+            self.history.train.log_batch(
+                batch_time, 0, 1000, 18000,
+                time, example % self.config.data.training_size, example,
+                train_loss, epoch=epoch, verbose=False                
+            )
+            
+            self.history.test.log_test(
+                example // 1000, epoch,
+                (example %  self.config.data.training_size) // 1000,
+                example % self.config.data.training_size,
+                example, time, test_loss,
+                mean_error, RMSE  
+            )
+            
+            if example >= self.config.training.example_limit:
+                print(f"Finished training after {example} examples")
+                break
+            if time >= self.config.training.time_limit:
+                print(f"Finished training after {secs_to_str(time)}")
+                break
+            if epoch > self.config.training.epoch_limit:
+                print(f"Finished training after {epoch-1} epochs")
+                
+        self.history.save()        
+        print("Displaying graph...")
+        self.history.test.plot()
+            
+        
         
     def __del__(self):
         self.close_history()
         
 class EnsembleOfRuns:
 
-    def __init__(self, parent_dir="runs/", use_existing=True, configs=['exploration.ini'], start_training=False):
+    def __init__(self, parent_dir="runs", use_existing=True, configs=['exploration.ini'], start_training=False, stub=False):
         self.parent_dir = parent_dir
         self.config_files = configs
         self.__config = None
+        self.__test_samples = None
         self.seed_length = None
         if use_existing:
             self.runs = {d.name: TrainingRun(parent_dir=parent_dir, identifier=d.name, parent_configs=configs)
                          for d in os.scandir(parent_dir) if d.is_dir()}
-            self.active_runs = {name:run for name,run in self.runs.itemse() if not run.config.exploration.inactive}
+            self.active_runs = {name:run for name,run in self.runs.items() if not run.config.exploration.inactive}
             for r in self.runs.values():
                 if r.config.exploration.seed is not None:
                     self.seed_length = len(r.config.exploration.seed)
                     break
         else:
             self.runs = {}
+        self.stub=stub
     
     @property
     def config(self):
@@ -152,7 +220,7 @@ class EnsembleOfRuns:
             sample_y = [losses[n] for n in names]
             failures = [failures[n] for n in names]
             if self.test_samples is not None:
-                test_X = self.test_samples
+                test_X = self.test_samples.passes
                 X_bounds = None
             else:
                 X_bounds = [(0,1)] * self.seed_length
@@ -166,9 +234,12 @@ class EnsembleOfRuns:
                 failures = failures,
                 failure_cost = failure_cost
             )[0]
+            if self.test_samples is not None:
+                self.test_samples.remove(seed)
+                self.test_samples.save()
             settings = generate_parameters(seed)
             
-        settings = settings.update({'exploration':{'seed':seed, 'inactive':not active}})    
+        settings = update(settings, {'exploration':{'seed':seed, 'inactive':not active}})    
         run = TrainingRun(parent_dir=self.parent_dir, settings=settings, parent_configs=self.config_files)
         self.runs[run.identifier] = run
         if active: self.active_runs[run.identifier] = run
@@ -178,6 +249,19 @@ class EnsembleOfRuns:
     def seeds(self):
         return {name:run.config.exploration.seed for name,run in self.runs.items()
                 if run.config.exploration.seed is not None}
+                
+    @property
+    def test_samples(self):
+        if self.__test_samples is None:
+            self.__test_samples = TrainableSampleGenerator.load(self.config.exploration.sample_file)
+        return self.__test_samples
+        
+    def fill_test_samples(self):
+        if self.test_samples is None:
+            self.__test_samples = TrainableSampleGenerator.load(self.config.exploration.sample_file)
+        if self.test_samples.num_passes < self.config.exploration.random_samples:
+            self.test_samples.sample(num_passes=self.config.exploration.random_samples)
+            self.test_samples.save()
     
     @property
     def failures(self):
@@ -360,9 +444,16 @@ class TrackingGenerator:
 
 if __name__ == '__main__':
     # do something here
-    configs = sys.argv[1:] if len(sys.argv) > 1 else ["exploration.ini"]
-    ensemble = EnsembleOfRuns(configs = configs)
-    ensemble.training_cycle(10)
+    #configs = sys.argv[1:] if len(sys.argv) > 1 else ["exploration.ini"]
+    #ensemble = EnsembleOfRuns(configs = configs)
+    #ensemble.training_cycle(10)
+    settings, seed = random_parameters_and_seed()
+    print("Simulating random run:")
+    print(settings)
+    settings = update(settings, {'exploration':{'seed':seed}})    
+    run = TrainingRun(settings=settings)
+    run.execute_stub()
+
 
     
 

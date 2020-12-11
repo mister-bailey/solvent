@@ -23,13 +23,14 @@ def str_to_secs(s):
     assert len(t_strings) <= 3, f"Time string '{s}' has too many terms!"
     return sum(eval(n) * 60 ** i for i,n in enumerate(reversed(t_strings)))
     
-def secs_to_str(t):
-    h = t // (60 * 60)
+def secs_to_str(t, decimals=0):
+    h = int(t // (60 * 60))
     t -= h * 60 * 60
-    m = t // 60
+    m = int(t // 60)
     t -= m * 60
-    s = round(t)
-    return f"{h}:{m:2d}:{s:2d}"
+    s = int(round(t))
+    chars = 3 + decimals if decimals > 0 else 2
+    return f"{h}:{m:02d}:{s:0{chars}.{decimals}f}"
     
 def get_any(s):
     for e in s:
@@ -53,6 +54,14 @@ def dict_update(pairs):
         else:
             d[k] = v
     return d
+    
+def immut(x):
+    if isinstance(x, Mapping):
+        return tuple((k,immut(v)) for k,v in x.items())
+    elif isinstance(x, list):
+        return tuple(immut(y) for y in x)
+    else:
+        return x
 
 def invert_dict(d, one_to_many=True, recursive=True):
     if recursive and isinstance(next(iter(d.values())), Mapping):
@@ -338,15 +347,17 @@ class Config:
         # exploration parameters
         self.load_section('exploration', eval_func=eval,
                 eval_funcs={'seed':(lambda x : np.array(eval(x))), 'time_increment':str_to_secs,
-                             'max_time':str_to_secs},
+                             'max_time':str_to_secs,
+                             'run_dir':str, 'sample_file':str},
                 defaults={'seed':None, 'failed':0, 'max_epoch':None, 'max_example':None, 'max_time':None,
                           'time_increment':None, 'example_increment':None, 'epoch_increment':None,
-                          'inactive':None})
+                          'inactive':None, 'run_dir':None, 'sample_file':None})
         if self.exploration.max_example is None and self.exploration.max_epoch is not None:
             self.exploration.max_example = int(self.exploration.max_epoch * self.data.training_size)
         if self.exploration.example_increment is None and self.exploration.epoch_increment is not None:
             self.exploration.example_increment = int(self.exploration.epoch_increment * self.data.training_size)
-        
+        if self.exploration.sample_file is not None and self.exploration.run_dir is not None:
+            self.exploration.sample_file = os.path.join(self.exploration.run_dir, self.exploration.sample_file)
 
 
     # The only purpose of this section is to get rid of the red squiggly lines from
@@ -425,6 +436,9 @@ class Config:
         self.exploration.epoch_increment = None
         self.exploration.example_increment = None
         self.exploration.time_increment = None
+        self.exploration.run_dir = None
+        self.exploration.sample_file = None
+        self.exploration.random_samples = 0
         
         self.active_runs = SECTION()
         self.abandoned_runs = SECTION()

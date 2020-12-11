@@ -4,6 +4,7 @@ import gc
 
 import numpy as np
 import torch
+import os
 
 from variable_networks import VariableParityNetwork
 from sparse_kernel_conv import SparseKernelConv, DummyConvolution
@@ -16,11 +17,21 @@ from exploration import random_parameters_and_seed, generate_parameters
 
 class TrainableSampleGenerator:
     
-    def __init__(self, filename="samples.torch", configs=['exploration.ini'], num_batches=2):
+    def __init__(self, filename=None, configs=['exploration.ini'], num_batches=2, stub=False):
         self.filename=filename
         self.config_files=configs
         self.__config = None
         self.config = Config(*self.config_files, track_sources=True, use_command_args=False)
+        
+        self.seed_length = len(random_parameters_and_seed()[1])
+        self.seeds = np.zeros((0,self.seed_length))
+        self.passed = np.zeros(0, dtype=bool)
+        self.failure_model = None
+        self.num_batches = num_batches
+
+        self.stub=stub
+        if stub:
+            return
         
         num_examples = self.config.training.batch_size * num_batches
         print("Initializing data pipeline... ", end='')
@@ -37,14 +48,8 @@ class TrainableSampleGenerator:
         pipeline.close()
         del pipeline
         print("Done.")
-        
-        self.seed_length = len(random_parameters_and_seed()[1])
-        self.seeds = np.zeros((0,self.seed_length))
-        self.passed = np.zeros(0, dtype=bool)
-        self.failure_model = None
-        self.num_batches = num_batches
-        
-    def sample(self, num_samples=None, num_passes=None, increment=None, verbose_test=True, save=True):
+                
+    def sample(self, num_samples=None, num_passes=None, increment=100, verbose=True, verbose_test=False, save=True):
         current_samples = len(self.seeds)
         current_passes = self.num_passes
         if increment and num_samples is not None:
@@ -73,12 +78,12 @@ class TrainableSampleGenerator:
                 self.passed[i] = not failed
                 if not failed:
                     current_passes += 1
-                    print(f"*********** {current_passes:5d}  ***********")
+                    if verbose: print(f"*********** {current_passes:5d}  ***********")
                     if num_passes is not None and current_passes >= num_passes:
                         if save: self.save()
                         return
                 else:
-                    print(f"· · · · · ·        · · · · · ·")
+                    if verbose: print(f"· · · · · ·        · · · · · ·")
                 current_samples += 1
                 if num_samples is not None and current_samples >= num_samples:
                     if save: self.save()
@@ -96,12 +101,17 @@ class TrainableSampleGenerator:
         return np.sum(self.passed)
     
     @staticmethod
-    def load(parent_dir="runs/", file="sample.torch", configs=['exploration.ini']):
-        pass
+    def load(file):
+        if os.path.isfile(file):
+            return torch.load(file)
+        else:
+            return None
     
     def save(self, filename=None, verbose=True):
         if filename is None:
             filename = self.filename
+        if filename is None:
+            return
         if verbose: print("Saving samples... ", end='')
         torch.save(self, filename)
         if verbose: print("Done.")
@@ -109,6 +119,8 @@ class TrainableSampleGenerator:
     def test_sample(self, seed, verbose=True):
         failed=0
         settings = generate_parameters(seed)
+        if self.stub:
+            return self.test_stub(settings)
         if verbose: print(f"Testing sample: {settings['model']}")
         
         if verbose: print("Building model... ", end='')
@@ -161,10 +173,29 @@ class TrainableSampleGenerator:
         else:
             if verbose: print("\n**** Passed ****")
         return failed
+    
+    def test_stub(self, settings):
+        ls = [list(range(lmax + 1)) for lmax in settings['model']['lmaxes']]
+        muls = settings['model']['muls']
+        lmuls = [list(zip(li, mi)) for li,mi in list(zip(ls,muls))]
+        
+        memory = sum(sum(l**2 * m for l,m in layer) for layer in lmuls)
+        
+        if memory > 100:
+            return 3
+        else:
+            return 0
+            
+    def remove(self, seed):
+        indices = np.argwhere(self.seeds==seed)
+        for index in np.flip(indices, axis=0):
+            self.seeds = np.delete(self.seeds, index, axis=0)
+            self.passed = np.delete(self.passed, index, axis=0)
+        
 
 if __name__ == '__main__':
-    sampler = TrainableSampleGenerator()
-    sampler.sample(1000, increment=100, verbose_test=False)
+    sampler = TrainableSampleGenerator(stub=True)
+    sampler.sample(num_passes=1000, increment=100, verbose_test=False)
         
         
             

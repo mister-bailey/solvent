@@ -403,7 +403,6 @@ def main():
             if input("Continue training with old model but new training history? (y/n) ").lower().strip() != 'y':
                 print("Exiting...")
                 pipeline.close()
-                raise
                 exit()
             resume = False
     if not resume:

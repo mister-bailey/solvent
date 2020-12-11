@@ -1,5 +1,5 @@
 # Treat this much like a config file, editing the functions to set exploration policy
-import exploration
+#import exploration
 import statistics as stat
 
 # Answers whether or not it is worth continuing to train 'run'
