@@ -327,7 +327,7 @@ def main():
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '12355'  
         print("Initializing process group...")
-        dist.init_process_group(backend="nccl", rank=0, world_size=config.gpus, timeout=30) 
+        dist.init_process_group(backend="nccl", rank=0, world_size=config.gpus) 
         print("Building DistributedDataParallel model... ", flush=True)
         torch.cuda.set_device(0)
         model = DistributedDataParallel(model, device_ids=[0], output_device=0)
@@ -599,8 +599,6 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
     verbose = False #True if rank==1 else False
     
     if verbose: print(f"[{rank}]: pipeline.batch_queue = {pipeline.batch_queue}", flush=True)
-    
-    print(model + 23) # Bad code! Should crash!
 
     data_queue = deque(maxlen=preload)
     while True:
@@ -620,7 +618,7 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
         if verbose: print(f"[{rank}]: Starting training...", flush=True)
         _ = train_batch(data_queue, model, optimizer, use_tensor_constraint=use_tensor_constraint)
         if verbose: print(f"[{rank}]: Finished training.", flush=True)
-
+        
         if test_key is not None and test_index < 10:
             test_rank = (test_index % (world_size-1)) + 1
             test_index += 1
@@ -634,7 +632,9 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
     print("Traceback:")
     traceback.print_tb(e.__traceback__)
     print(f"Exiting with exit code {3 + rank}")
+    pipeline.close()
     os.kill(mp.parent_process(), 3 + rank)
+    sys.exit(3 + rank)
 
 def flush_input():
     try:
