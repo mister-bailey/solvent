@@ -326,7 +326,7 @@ def main():
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '12355'  
         print("Initializing process group...")
-        dist.init_process_group(backend="nccl", rank=0, world_size=config.gpus) 
+        dist.init_process_group(backend="nccl", rank=0, world_size=config.gpus, timeout=30) 
         print("Building DistributedDataParallel model... ", flush=True)
         torch.cuda.set_device(0)
         model = DistributedDataParallel(model, device_ids=[0], output_device=0)
@@ -461,104 +461,111 @@ def main():
         listener = keyboard.Listener(on_press=hotkey.press, on_release=hotkey.release)
         listener.start()
     
-    for epoch in range(start_epoch, epoch_limit + 1):
-        print("\n" + ("Resuming" if partial_epoch else "Starting") +
-              f" epoch {epoch}...", end="\r", flush=True)
+    # catching runtime errors in auxiliary threads and reraising them:
+    try:
+        for epoch in range(start_epoch, epoch_limit + 1):
+            print("\n" + ("Resuming" if partial_epoch else "Starting") +
+                f" epoch {epoch}...", end="\r", flush=True)
 
-        # though we may start partway through an epoch, subsequent epochs start at example 0 and batch 1
-        if partial_epoch:
-            partial_epoch = False
-        else:
-            example_in_epoch = 0
-            batch_in_epoch = 1
+            # though we may start partway through an epoch, subsequent epochs start at example 0 and batch 1
+            if partial_epoch:
+                partial_epoch = False
+            else:
+                example_in_epoch = 0
+                batch_in_epoch = 1
 
-        batch_of_last_test = (batch_in_epoch // testing_interval) * testing_interval + 1
-        batch_of_last_save = (batch_in_epoch // save_interval) * save_interval + 1
+            batch_of_last_test = (batch_in_epoch // testing_interval) * testing_interval + 1
+            batch_of_last_save = (batch_in_epoch // save_interval) * save_interval + 1
 
-        # start reading at example_in_epoch
-        pipeline.scan_to(example_in_epoch)
-        pipeline.start_reading(training_size - example_in_epoch, batch_size=dist_batch_size)
+            # start reading at example_in_epoch
+            pipeline.scan_to(example_in_epoch)
+            pipeline.start_reading(training_size - example_in_epoch, batch_size=dist_batch_size)
 
-        # loop while any batches are still to come in this epoch
-        while pipeline.any_coming() or len(data_queue) > 0:
+            # loop while any batches are still to come in this epoch
+            while pipeline.any_coming() or len(data_queue) > 0:
 
-            time1 = time.time()
-            while len(data_queue) < preload and pipeline.any_coming():
-                data = pipeline.get_batch().to(device)
-                data_queue.appendleft(data)
-            t_wait = time.time()-time1
+                time1 = time.time()
+                while len(data_queue) < preload and pipeline.any_coming():
+                    data = pipeline.get_batch().to(device)
+                    data_queue.appendleft(data)
+                t_wait = time.time()-time1
 
-            time1 = time.time()
-            try:
-                train_losses = train_batch(data_queue, model, optimizer, use_tensor_constraint=use_tensor_constraint)
-            except RuntimeError as e:
-                print(e)
-                if 'CUDA' in e.args[0]:
-                    finish(3)
-                else:
-                    finish(4)
-            train_time = time.time() - time1
-            elapsed_time += train_time
+                time1 = time.time()
+                try:
+                    train_losses = train_batch(data_queue, model, optimizer, use_tensor_constraint=use_tensor_constraint)
+                except RuntimeError as e:
+                    print(e)
+                    if 'CUDA' in e.args[0]:
+                        finish(3)
+                    else:
+                        raise
+                train_time = time.time() - time1
+                elapsed_time += train_time
 
-            n_examples = min(batch_size, training_size - example_in_epoch)
-            example_in_epoch += n_examples
-            example += n_examples
-            batch_in_epoch += 1
-            
-            history.train.log_batch(
-                train_time, t_wait, n_examples, len(data.x) * config.gpus, elapsed_time,
-                example_in_epoch, example, *train_losses, epoch=epoch)
-
-            if config.parallel and test_key is not None and test_index < 10:
-                test_rank = (test_index % (config.gpus-1)) + 1
-                test_index += 1
-                dist.barrier()
-                print(f"\n[0]: receiving test params from rank {test_rank}...", flush=True)
-                dist.broadcast(test_tensor, src=test_rank)
-                if torch.equal(test_tensor, model.state_dict()[test_key]):
-                    print("  Model is synchronized!", flush=True)
-                else:
-                    print("  Not synchronized!", flush=True)
-
-            if batch_in_epoch - batch_of_last_test >= testing_interval or not pipeline.any_coming():
-                batch_of_last_test = batch_in_epoch
-                history.run_test(model)
-
-            if elapsed_time >= time_limit:
-                finish_training = True
-                exit_message = f"Finished after {str(timedelta(seconds=history.elapsed_time() - start_elapsed))[:-5]} elapsed training time."
-            
-            if example >= example_limit:
-                finish_training = True 
-                exit_message = f"Finished after training {example} examples, or {(example/training_size):.2f} epochs."
+                n_examples = min(batch_size, training_size - example_in_epoch)
+                example_in_epoch += n_examples
+                example += n_examples
+                batch_in_epoch += 1
                 
-            if os.name == 'nt':
-                if abort_lock.acquire(blocking=False):
-                    flush_input()
-                    if input("\nAbort training run? (y/n) ").lower().strip() == 'y':
-                        finish_training = True
-                        exit_message = "Aborting training..."
-            if os.path.isfile(os.path.join(save_dir, "kill.file")):
-                os.remove(os.path.join(save_dir, "kill.file"))
-                finish_training = True
-                exit_message = "Aborting training..."
+                history.train.log_batch(
+                    train_time, t_wait, n_examples, len(data.x) * config.gpus, elapsed_time,
+                    example_in_epoch, example, *train_losses, epoch=epoch)
 
-            if batch_in_epoch - batch_of_last_save >= save_interval or not pipeline.any_coming() or finish_training:
-                batch_of_last_save = batch_in_epoch
-                checkpoint_filename = f"{save_prefix}-e{epoch:03d}_b{batch_in_epoch:05}-checkpoint.torch"
-                save_checkpoint(model_kwargs, model,
-                                checkpoint_filename, optimizer, all_elements)
-                history.save()
-                if num_checkpoints:
-                    cull_checkpoints(save_prefix, num_checkpoints)
+                if config.parallel and test_key is not None and test_index < 10:
+                    test_rank = (test_index % (config.gpus-1)) + 1
+                    test_index += 1
+                    dist.barrier()
+                    print(f"\n[0]: receiving test params from rank {test_rank}...", flush=True)
+                    dist.broadcast_multigpu([test_tensor], src=test_rank)
+                    if torch.equal(test_tensor, model.state_dict()[test_key]):
+                        print("  Model is synchronized!", flush=True)
+                    else:
+                        print("  Not synchronized!", flush=True)
 
-            if finish_training:
-                print("\n" + exit_message)
-                finish()
-            
+                if batch_in_epoch - batch_of_last_test >= testing_interval or not pipeline.any_coming():
+                    batch_of_last_test = batch_in_epoch
+                    history.run_test(model)
 
+                if elapsed_time >= time_limit:
+                    finish_training = True
+                    exit_message = f"Finished after {str(timedelta(seconds=history.elapsed_time() - start_elapsed))[:-5]} elapsed training time."
+                
+                if example >= example_limit:
+                    finish_training = True 
+                    exit_message = f"Finished after training {example} examples, or {(example/training_size):.2f} epochs."
+                    
+                if os.name == 'nt':
+                    if abort_lock.acquire(blocking=False):
+                        flush_input()
+                        if input("\nAbort training run? (y/n) ").lower().strip() == 'y':
+                            finish_training = True
+                            exit_message = "Aborting training..."
+                if os.path.isfile(os.path.join(save_dir, "kill.file")):
+                    os.remove(os.path.join(save_dir, "kill.file"))
+                    finish_training = True
+                    exit_message = "Aborting training..."
+
+                if batch_in_epoch - batch_of_last_save >= save_interval or not pipeline.any_coming() or finish_training:
+                    batch_of_last_save = batch_in_epoch
+                    checkpoint_filename = f"{save_prefix}-e{epoch:03d}_b{batch_in_epoch:05}-checkpoint.torch"
+                    save_checkpoint(model_kwargs, model,
+                                    checkpoint_filename, optimizer, all_elements)
+                    history.save()
+                    if num_checkpoints:
+                        cull_checkpoints(save_prefix, num_checkpoints)
+
+                if finish_training:
+                    print("\n" + exit_message)
+                    finish()
+    except Exception as e:
+        print("Main process crashed with error:")
+        print(f"  {e}")
+        print("Aborting training...")
+        finish(3)
+        
     print(f"\nFinished training {epoch_limit} epochs.")
     finish()
+    
 
 # auxiliary training processes (not the main one)
 def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_state_dict=None, optimizer_state_dict=None, preload=1, test_key=None):
@@ -591,6 +598,8 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
     verbose = False #True if rank==1 else False
     
     if verbose: print(f"[{rank}]: pipeline.batch_queue = {pipeline.batch_queue}", flush=True)
+    
+    print(model + 23) # Bad code! Should crash!
 
     data_queue = deque(maxlen=preload)
     while True:
@@ -616,10 +625,14 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
             test_index += 1
             dist.barrier()
             if verbose and test_rank == rank: print(f"\n[{rank}]: sending test params ... ", flush=True)  
-            dist.broadcast(model.state_dict()[test_key], src=test_rank)
+            dist.broadcast_multigpu([model.state_dict()[test_key]], src=test_rank)
   except Exception as e:
-    print(f"Auxiliary training process {rank} raised an exception:")
-    print(e)
+    print(f"Auxiliary process {rank} crashed with error:")
+    print(f"  {e}")
+    print(f"Parent process: {mp.parent_process()}")
+    print("Aborting training...")
+    print(f"Exiting with exit code {3 + rank}")
+    os.kill(mp.parent_process(), 3 + rank)
 
 def flush_input():
     try:
