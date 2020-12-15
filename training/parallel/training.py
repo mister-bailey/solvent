@@ -39,6 +39,7 @@ if __name__ == '__main__': print("Loading sys...")
 import sys
 if __name__ == '__main__': print("Loading os...")
 import os
+import traceback
 if __name__ == '__main__': print("Loading math...")
 import math
 if __name__ == '__main__': print("Loading glob...")
@@ -630,7 +631,8 @@ def aux_train(rank, world_size, pipeline, learning_rate, model_kwargs, model_sta
     print(f"Auxiliary process {rank} crashed with error:")
     print(f"  {e}")
     print(f"Parent process: {mp.parent_process()}")
-    print("Aborting training...")
+    print("Traceback:")
+    traceback.print_tb(e.__traceback__)
     print(f"Exiting with exit code {3 + rank}")
     os.kill(mp.parent_process(), 3 + rank)
 
