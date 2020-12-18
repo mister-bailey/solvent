@@ -60,7 +60,9 @@ if __name__ == '__main__':
 if os.name == 'posix' and __name__ == '__main__':
     print("Setting up multiprocess resources...", flush=True)
     mp.set_start_method('spawn')
+    print("Loading resource", flush=True)
     import resource
+    print("Getting RLIMIT", flush=True)
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
     print(
         f"\nPreviously: maximum # of open file descriptors: {rlimit[0]} (soft limit) / {rlimit[1]} (hard limit)")
