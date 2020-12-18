@@ -55,9 +55,10 @@ if __name__ != '__main__':
     print("spawning process...")
 
 if __name__ == '__main__':
-    print("done loading modules.")
+    print("done loading modules.", flush=True)
 
 if os.name == 'posix' and __name__ == '__main__':
+    print("Setting up multiprocess resources...", flush=True)
     mp.set_start_method('spawn')
     import resource
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
