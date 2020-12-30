@@ -1,5 +1,6 @@
 import torch
 from functools import partial
+import inspect
 
 #from e3nn.networks import *
 from e3nn import o3, rs
@@ -35,10 +36,17 @@ class VariableParityNetwork(torch.nn.Module):
         super().__init__()
 
         self.n_norm = n_norm
+        
         if radial_model is None:
-            radial_model = partial(GaussianRadialModel, number_of_basis=number_of_basis)
-        R = partial(radial_model, max_radius=max_radius, h=radial_h,
-                    L=radial_layers, act=swish)
+            radial_model = GaussianRadialModel
+        radial_kwargs = {'max_radius':max_radius,
+                         'h':radial_h,
+                         'L':radial_layers,
+                         'act':swish}
+        if 'number_of_basis' in get_args(radial_model):
+            radial_kwargs['number_of_basis'] = number_of_basis
+        R = partial(radial_model, **radial_kwargs)
+        
         bn_kwargs = {}
         if batch_norm_momentum is not None:
             bn_kwargs['momentum'] = batch_norm_momentum
@@ -112,4 +120,10 @@ class VariableParityNetwork(torch.nn.Module):
                 output = layer(output, *args, **kwargs)
         
         return output
+
+def get_args(f):
+    if inspect.isclass(f):
+        return inspect.getargspec(f.__init__).args[1:]
+    else:
+        return inspect.getargspec(f).args
 
