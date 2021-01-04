@@ -42,6 +42,7 @@ if os.path.exists(name):
 os.mkdir(name)
 shutil.copyfile(args["config"], f"{name}/config.yml")
 shutil.copyfile("run_from_smiles.py", f"{name}/run_from_smiles.py")
+shutil.copyfile("hdf5_to_sp.py", f"{name}/hdf5_to_sp.py")
 
 os.chdir(name)
 print(f"{name}/ created")

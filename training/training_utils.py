@@ -1,6 +1,7 @@
 import torch
 import e3nn
 from e3nn.networks import GatedConvParityNetwork, S2ConvNetwork
+from variable_networks import VariableParityNetwork
 from e3nn.point.message_passing import Convolution
 from copy import deepcopy
 import torch_geometric as tg
