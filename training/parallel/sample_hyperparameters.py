@@ -11,7 +11,7 @@ from sparse_kernel_conv import SparseKernelConv, DummyConvolution
 from training_utils import train_batch
 from pipeline import Pipeline
 from training_config import Config
-from exploration import random_parameters_and_seed, generate_parameters
+from exploration_policy import random_parameters_and_seed, generate_parameters
 
 
 

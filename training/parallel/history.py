@@ -15,6 +15,7 @@ from resizable import H5Array as Array
 import os
 from shutil import copyfile
 import h5py
+from scipy.optimize import curve_fit
 
 
 class TrainTestHistory:
@@ -344,6 +345,7 @@ class TestingHistory(BaseHistory):
         self.failed = failed
         self.number_to_symbol = number_to_symbol if number_to_symbol else config.number_to_symbol
         self.wandb_log = wandb_log
+        self.__curve_fit = None
 
         assert hdf5, "Non-hdf5 histories not working right now."
         if not load:
@@ -399,16 +401,6 @@ class TestingHistory(BaseHistory):
     def max_batch(self):
         return self.batch_number[-1]
         
-    def plot(self, figure=None, x_axis='example', show=True): # x_axis = 'time' is also allowed
-        x_axis = self.example if x_axis=='example' else self.elapsed_time
-        if figure is None:
-            plt.figure(figsize=(12,8))
-        plt.plot(np.array(x_axis), np.array(self.loss), "bo-", label="test")
-        if figure is None:
-            plt.legend(loc="best")
-            if show:
-                plt.show()
-
     def run_test(self, model, batch_number, epoch, batch_in_epoch, example_in_epoch, example, elapsed_time, verbose=True, log=True):
         if verbose: print("")
         use_tensor_constraint = (self.testing_batches[0].y.shape[-1] == 10)
@@ -487,8 +479,9 @@ class TestingHistory(BaseHistory):
                 'RMSE_by_element':{
                     e:RMSE_by_element[i].item() for i, e in enumerate(self.relevant_elements)}
                 })
+        self.__curve_fit = None
                 
-    def smoothed_loss(self, i, window=5):
+    def smoothed_loss(self, i = -1, window=5):
         i = len(self.loss) - i if i < 0 else i
         window = min(window, i)
         return sum(self.loss[i-window:i+1]) / window
@@ -525,6 +518,58 @@ class TestingHistory(BaseHistory):
                 losses.append(h.loss_interpolate(x, coord, window) * last_loss / h.loss_interpolate(last_x, coord, window))
         assert losses, "Extrapolating beyond farthest history."
         return sum(losses) / len(losses)
+    
+    def plot(self, figure=None, x_axis='example',
+             curve_fit=False, asymptote=False,
+             color='b', fit_color='g', asymptote_color='r', show=True, **kwargs): # x_axis = 'time' is also allowed
+        #x_axis = self.example if x_axis=='example' else self.elapsed_time
+        x_axis = self.coord(x_axis)
+        if figure is None:
+            plt.figure(figsize=(12,8))
+        plt.plot(np.array(x_axis), np.array(self.loss), f'{color}o-', label="test", **kwargs)
+        if curve_fit:
+            self.plot_curve_fit(color=fit_color, **kwargs)
+        if asymptote:
+            self.plot_asymptote(color=asymptote_color, **kwargs)
+        if figure is None:
+            plt.legend(loc="best")
+            if show:
+                plt.show()
+                
+    def plot_curve_fit(self, coord='example', color='g', **kwargs):
+        popt, _ = self.curve_fit(coord=coord)
+        fn = lambda x : exp_fn(x, *popt)
+        x_axis = self.coord(coord)
+        
+        plt.plot(x_axis, fn(x_axis), f'{color}:', **kwargs)
+
+    def plot_asymptote(self, color='r', coord='example', show_error=True, n_sigma=3, **kwargs):
+        popt, pcov = self.curve_fit(coord=coord)
+        perr = np.sqrt(np.diag(pcov))
+        x_axis = self.coord(coord)
+        
+        plt.plot(x_axis, np.full(len(x_axis), popt[2]), f'{color}', **kwargs)
+        if show_error:
+            plt.plot(x_axis, np.full(len(x_axis), popt[2] + n_sigma * perr[2]), f'{color}:', **kwargs)
+            plt.plot(x_axis, np.full(len(x_axis), popt[2] - n_sigma * perr[2]), f'{color}:', **kwargs)
+        
+    def curve_fit(self, coord='example'):
+        if self.__curve_fit is None:
+            x = self.coord(coord)        
+            limit0 = self.smoothed_loss()
+            x2 = x[-1]
+            x1 = x2 / 2
+            y2 = self.loss_interpolate(x2, coord) - limit0
+            y1 = self.loss_interpolate(x1, coord) - limit0
+            speed0 = 2 * ( np.log(y2) - np.log(y1) ) / x2
+            a0 = (y2 - y1) / (np.exp(speed0 * x2) - np.exp(speed0 * x1))
+            
+            self.__curve_fit = curve_fit(exp_fn, x, self.loss, (a0, speed0, limit0))
+        return self.__curve_fit
+        
+    def asymptote(self, coord='example'):
+        return self.curve_fit()[0][2], np.sqrt(self.curve_fit()[1][2,2])
+        
 
     def __getstate__(self):
         d = self.__dict__.copy()
@@ -533,6 +578,9 @@ class TestingHistory(BaseHistory):
         return d
         
 
+def exp_fn(x, a, speed, limit):
+    return a * np.exp(speed * x) + limit
+        
         
 
 
