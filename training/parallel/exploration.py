@@ -7,7 +7,7 @@ import math
 import random
 from history import TrainTestHistory
 import bayes_search as bayes
-from exploration_policy import random_parameters_and_seed, generate_parameters, proceed_with_training, next_training_limit
+from exploration_policy import random_parameters_and_seed, generate_parameters, proceed_with_training, next_training_limit, order_runs as order_runs_policy
 from sample_hyperparameters import TrainableSampleGenerator
 import numpy as np
 import matplotlib as plt
@@ -208,6 +208,18 @@ class EnsembleOfRuns:
         if self.__config is None:
             self.__config = Config(*self.config_files, track_sources=True, use_command_args=False)
         return self.__config
+        
+    def activate(self, run, active=True):
+        if active:
+            run.set_config({'exploration':{'inactive':False}})
+            self.active_runs[run.identifier] = run
+        else:
+            self.inactivate(run)
+    
+    def inactivate(self, run):
+        run.set_config({'exploration':{'inactive':True}})
+        self.active_runs.pop(run.identifier, None)
+             
     
     def generate_run(self, failure_cost=.1, active=True):
         if self.seed_length is None:
@@ -272,39 +284,8 @@ class EnsembleOfRuns:
     def last_x(self, coord='time'):
         return max(max_value(run.history.test.coord(coord)) for run in self.runs.values())
     
-    def extrapolated_losses(self, coord='time', smoothing=5, active_only=False):
-        last_x = self.last_x(coord)
-        long_runs = {}
-        short_runs = {}
-        long_histories = set()
-        losses = {}
-        runs = self.active_runs if active_only else self.runs
-        for name, run in runs.values():
-            if max_value(run.history.test.coord(coord)) == last_x:
-                long_runs[name] = run
-                losses[name] = run.history.test.smoothed_loss(-1, smoothing)
-                long_histories.add(run.history.test)
-            else:
-                short_runs[name] = run
-        for name, run in short_runs.values():
-            losses[name] = run.history.test.loss_extrapolate(last_x, long_histories, coord, smoothing)
-        return losses
-        
-    def mixed_losses(self, t_coeff=.5, transform='log', smoothing=5, active_only=False):
-        if transform=='none' or transform is None:
-            trn = lambda x : x
-            inv = lambda x : x
-        elif transform=='log':
-            trn = math.log
-            inv = math.exp
-        t_losses = self.extrapolated_losses(coord='time', smoothing=smoothing, active_only=active_only)
-        b_losses = self.extrapolated_losses(coord='example', smoothing=smoothing, active_only=active_only)
-        return {name:inv(t_coeff * trn(t_losses[name]) + trn((1-t_coeff) * b_losses[name])) for name in t_losses}
     
-    def asymptotes(self, coord='example', active_only=False):
-        runs = self.active_runs if active_only else self.runs
-        return {name:run.history.test.asymptote(coord=coord) for name,run in runs.values()}
-        
+    # train a run up to 'examples' or 'time' limit
     def train_run(self, run, examples=None, time=None, retries=1):
         if examples is None: examples = self.config.exploration.max_example
         if time is None: time = self.config.exploration.max_time
@@ -328,7 +309,9 @@ class EnsembleOfRuns:
         self.__config = None
         
     new_limit = next_training_limit
-                    
+        
+    # increases the current training limit, and brings all active runs
+    # up to that level (or inactivates them if they suck)            
     def training_increment(self, runs, max_time=None, max_example=None):
         new_time, new_example = self.new_limit()
         if max_time is None: max_time = new_time
@@ -342,23 +325,52 @@ class EnsembleOfRuns:
     
     proceed = proceed_with_training
     
+    # trains a run in steps until it reaches the current
+    # maximum time/example, or until it fails a preliminary
+    # judgment
     def bring_up_run(self, run):
-        run.set_config({'exploration':{'inactive':False}})
-        max_example = self.config.exploration.max_example
-        max_time = self.config.exploration.max_time
-        steps = np.array([.125, .25, .5, 1])
-        example_steps = (max_example * steps).astype(int)
-        time_steps = (max_time * steps).astype(int)
+        if run not in self.active_runs:
+            self.activate(run)
+        config = self.config.exploration
         
+        # create steps at 1/8th, 1/4th, etc of max extent
+        steps = np.array([.125, .25, .5, 1])
+        example_steps = (config.max_example * steps).astype(int)
+        time_steps = (config.max_time * steps).astype(int)
+        
+        # don't train very short runs
+        example_steps = example_steps[example_steps >= config.example_increment]
+        time_steps = time_steps[time_steps >= config.time_increment]
+        
+        
+        # Step through time/example steps until current run has
+        # not surpassed a step. This is the step we will start
+        # training toward.
         for i in range(len(steps)):
-            if run.time < time_steps[i] or run.examples < time_steps[i]:
+            if run.time < time_steps[i] or run.examples < example_steps[i]:
                 break
         
         for i in range(i, len(steps)):
             self.train_run(run, time=time_steps[i], examples=time_steps[i])
             if not self.proceed(run):
-                run.set_config({'exploration':{'inactive':True}})
+                self.inactivate(run)
                 break
+    
+    order_runs = order_runs_policy
+    
+    # activates the best n runs and inactivates the others
+    def activate_best(self, n=4, runs=None):
+        if runs is None:
+            runs = self.runs.values()
+        runs = self.order_runs(runs)
+        
+        for run in runs[:n]:
+            if run not in self.active_runs:
+                self.activate(run)
+            
+        for run in runs[n:]:
+            if run in self.active_runs:
+                self.inactivate(run)
             
     def plot_active_runs(self, run=None):
         plt.figure(figsize=(12,8))
@@ -386,6 +398,41 @@ class EnsembleOfRuns:
         plt.show()
             
         
+    # Deprecated
+    def extrapolated_losses(self, coord='time', smoothing=5, active_only=False):
+        last_x = self.last_x(coord)
+        long_runs = {}
+        short_runs = {}
+        long_histories = set()
+        losses = {}
+        runs = self.active_runs if active_only else self.runs
+        for name, run in runs.values():
+            if max_value(run.history.test.coord(coord)) == last_x:
+                long_runs[name] = run
+                losses[name] = run.history.test.smoothed_loss(-1, smoothing)
+                long_histories.add(run.history.test)
+            else:
+                short_runs[name] = run
+        for name, run in short_runs.values():
+            losses[name] = run.history.test.loss_extrapolate(last_x, long_histories, coord, smoothing)
+        return losses
+
+    ######## Some deprecated methods #########    
+    # Deprecated
+    def mixed_losses(self, t_coeff=.5, transform='log', smoothing=5, active_only=False):
+        if transform=='none' or transform is None:
+            trn = lambda x : x
+            inv = lambda x : x
+        elif transform=='log':
+            trn = math.log
+            inv = math.exp
+        t_losses = self.extrapolated_losses(coord='time', smoothing=smoothing, active_only=active_only)
+        b_losses = self.extrapolated_losses(coord='example', smoothing=smoothing, active_only=active_only)
+        return {name:inv(t_coeff * trn(t_losses[name]) + trn((1-t_coeff) * b_losses[name])) for name in t_losses}
+    
+    def asymptotes(self, coord='example', active_only=False):
+        runs = self.active_runs if active_only else self.runs
+        return {name:run.history.test.asymptote(coord=coord) for name,run in runs.values()}
         
             
         

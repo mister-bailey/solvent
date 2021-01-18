@@ -553,9 +553,11 @@ class TestingHistory(BaseHistory):
             plt.plot(x_axis, np.full(len(x_axis), popt[2] + n_sigma * perr[2]), f'{color}:', **kwargs)
             plt.plot(x_axis, np.full(len(x_axis), popt[2] - n_sigma * perr[2]), f'{color}:', **kwargs)
         
-    def curve_fit(self, coord='example'):
-        if self.__curve_fit is None:
-            x = self.coord(coord)        
+    def curve_fit(self, coord='example', subset=None):
+        if self.__curve_fit is None or subset is not None:
+            x = self.coord(coord)
+            if subset is not None:
+                x = x[subset]    
             limit0 = self.smoothed_loss()
             x2 = x[-1]
             x1 = x2 / 2
@@ -564,11 +566,43 @@ class TestingHistory(BaseHistory):
             speed0 = 2 * ( np.log(y2) - np.log(y1) ) / x2
             a0 = (y2 - y1) / (np.exp(speed0 * x2) - np.exp(speed0 * x1))
             
+            if subset is not None:
+                return curve_fit(exp_fn, x, self.loss[subset], (a0, speed0, limit0))
             self.__curve_fit = curve_fit(exp_fn, x, self.loss, (a0, speed0, limit0))
         return self.__curve_fit
         
     def asymptote(self, coord='example'):
         return self.curve_fit()[0][2], np.sqrt(self.curve_fit()[1][2,2])
+        
+    def show_fit_evolution(self, coord='example', pause = 1., n_sigma=3):
+        x_axis = self.coord(coord)
+        plt.figure(figsize=(12,8))
+        plt.plot(np.array(x_axis), np.array(self.loss), 'k-', alpha=.5)
+        limit = (np.array([.0625,.125,.25,.5,1]) * len(x_axis)).astype(int)
+        plt.show(block = False)
+        
+        for l in limit:
+            popt, pcov = self.curve_fit(coord=coord, subset=slice(l))
+            perr = np.sqrt(np.diag(pcov))
+            
+            fn = lambda x : exp_fn(x, *popt)        
+            curve = plt.plot(x_axis, fn(x_axis), 'g--')
+            
+            bd = plt.axvline(x=l, ls='g:')
+            
+            ac = plt.axhline(y=popt[2], ls='r--')
+            a0 = plt.axhline(y=popt[2] - n_sigma * perr[2], ls='r:')
+            a1 = plt.axhline(y=popt[2] + n_sigma * perr[2], ls='r:')
+            
+            plt.show(block = False)
+            plt.pause(pause)
+            
+            curve.remove()
+            bd.remove()
+            ac.remove()
+            a0.remove()
+            a1.remove()
+            
         
 
     def __getstate__(self):
@@ -581,7 +615,15 @@ class TestingHistory(BaseHistory):
 def exp_fn(x, a, speed, limit):
     return a * np.exp(speed * x) + limit
         
-        
+
+# if function is called
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) < 2:
+        exit()
+    history = TrainTestHistory(file=sys.argv[1])
+    history.test.show_fit_evolution()
+    input("Press Enter to continue...")
 
 
 # this function is deprecated. I include it only for reference.

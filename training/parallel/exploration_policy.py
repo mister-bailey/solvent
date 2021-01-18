@@ -1,6 +1,7 @@
 # Treat this much like a config file, editing the functions to set exploration policy
 #import exploration
 import statistics as stat
+import math
 
 # Answers whether or not it is worth continuing to train 'run'
 def proceed_with_training(ensemble, run):
@@ -45,7 +46,10 @@ def next_training_limit(ensemble):
     return new_time, new_example
     
 
-#
+# puts runs in order of how well they're performing; 0th is best
+def order_runs(ensemble, runs):
+    return sorted(runs, key=lambda r: r.history.test.asymptote[0])
+    
 
 import random
 
