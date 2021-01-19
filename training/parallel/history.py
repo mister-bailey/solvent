@@ -540,8 +540,8 @@ class TestingHistory(BaseHistory):
         if self.failed or len(self.loss) == 0:
             return float("nan")
         last_x = min(self.coord(coord)[-1], x)
-        last_i = 
-        weights = 
+        last_i = 0
+        weights = 0
     
     def plot(self, figure=None, x_axis='example',
              curve_fit=False, asymptote=False,
