@@ -39,11 +39,12 @@ if __name__ == '__main__': print("Loading sys...")
 import sys
 if __name__ == '__main__': print("Loading os...")
 import os
-import traceback
 if __name__ == '__main__': print("Loading math...")
 import math
 if __name__ == '__main__': print("Loading glob...")
 from glob import glob
+if __name__ == '__main__': print("Loading traceback...")
+import traceback
 if __name__ == '__main__': print("Loading training_config...")
 from training_config import Config
 if __name__ == '__main__': print("Loading training_utils...")
@@ -564,6 +565,8 @@ def main():
     except Exception as e:
         print("Main process crashed with error:")
         print(f"  {e}")
+        print("Traceback:")
+        traceback.print_tb(e.__traceback__)
         print("Aborting training...")
         finish(3)
         
