@@ -165,6 +165,9 @@ def main():
         model.parameters(), config.training.learning_rate)
     if resume:
         optimizer.load_state_dict(model_dict["optimizer_state_dict"])
+        # allow for change in learning rate
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = config.training.learning_rate
     print("Done.")
 
     # report configuration
