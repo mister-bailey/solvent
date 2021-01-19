@@ -9,13 +9,23 @@ import time
 import bisect
 from datetime import timedelta
 from training_utils import loss_function
-import training_config as config
+#import training_config as config
 from pipeline import Molecule
 from resizable import H5Array as Array
 import os
 from shutil import copyfile
 import h5py
 from scipy.optimize import curve_fit
+
+n_to_s = {
+1:'H',
+6:'C',
+7:'N',
+8:'O',
+16:'S',
+9:'F',
+17:'Cl'
+}
 
 
 class TrainTestHistory:
@@ -343,7 +353,7 @@ class TestingHistory(BaseHistory):
         self.testing_batches = testing_batches
         self.device = device
         self.failed = failed
-        self.number_to_symbol = number_to_symbol if number_to_symbol else config.number_to_symbol
+        self.number_to_symbol = number_to_symbol if number_to_symbol else n_to_s
         self.wandb_log = wandb_log
         self.__curve_fit = None
 
@@ -377,6 +387,13 @@ class TestingHistory(BaseHistory):
             self.loss = Array(file, 'loss')
             self.mean_error_by_element = Array(file, 'mean_error_by_element')
             self.RMSE_by_element = Array(file, 'RMSE_by_element')
+
+            if self.relevant_elements != relevant_elements:
+                print("relevant_elements has changed!")
+                if len(self.relevant_elements) < relevant_elements:
+                    self.mean_error_by_element.resize(len(relevant_elements),1)
+                    self.RMSE_by_element.resize(len(relevant_elements),1)
+                self.relevant_elements = relevant_elements
 
         # if we have no testing batches, we won't be running tests, so no need to prep
         if not testing_batches:
@@ -475,9 +492,9 @@ class TestingHistory(BaseHistory):
                 'elapsed_time':elapsed_time,
                 'test_loss':loss,
                 'mean_error_by_element':{
-                    e:mean_error_by_element[i].item() for i, e in enumerate(self.relevant_elements)},
+                    int(e):mean_error_by_element[i].item() for i, e in enumerate(self.relevant_elements)},
                 'RMSE_by_element':{
-                    e:RMSE_by_element[i].item() for i, e in enumerate(self.relevant_elements)}
+                    int(e):RMSE_by_element[i].item() for i, e in enumerate(self.relevant_elements)}
                 })
         self.__curve_fit = None
                 
@@ -518,6 +535,13 @@ class TestingHistory(BaseHistory):
                 losses.append(h.loss_interpolate(x, coord, window) * last_loss / h.loss_interpolate(last_x, coord, window))
         assert losses, "Extrapolating beyond farthest history."
         return sum(losses) / len(losses)
+        
+    def relative_loss(self, other, x, coord='time', window=5):
+        if self.failed or len(self.loss) == 0:
+            return float("nan")
+        last_x = min(self.coord(coord)[-1], x)
+        last_i = 
+        weights = 
     
     def plot(self, figure=None, x_axis='example',
              curve_fit=False, asymptote=False,
@@ -553,7 +577,7 @@ class TestingHistory(BaseHistory):
             plt.plot(x_axis, np.full(len(x_axis), popt[2] + n_sigma * perr[2]), f'{color}:', **kwargs)
             plt.plot(x_axis, np.full(len(x_axis), popt[2] - n_sigma * perr[2]), f'{color}:', **kwargs)
         
-    def curve_fit(self, coord='example', subset=None):
+    def curve_fit(self, coord='example', subset=None, **kwargs):
         if self.__curve_fit is None or subset is not None:
             x = self.coord(coord)
             if subset is not None:
@@ -567,41 +591,50 @@ class TestingHistory(BaseHistory):
             a0 = (y2 - y1) / (np.exp(speed0 * x2) - np.exp(speed0 * x1))
             
             if subset is not None:
-                return curve_fit(exp_fn, x, self.loss[subset], (a0, speed0, limit0))
-            self.__curve_fit = curve_fit(exp_fn, x, self.loss, (a0, speed0, limit0))
+                return curve_fit(exp_fn, x, self.loss[subset], (a0, speed0, limit0), **kwargs)
+            self.__curve_fit = curve_fit(exp_fn, x, self.loss, (a0, speed0, limit0), **kwargs)
         return self.__curve_fit
         
     def asymptote(self, coord='example'):
         return self.curve_fit()[0][2], np.sqrt(self.curve_fit()[1][2,2])
         
-    def show_fit_evolution(self, coord='example', pause = 1., n_sigma=3):
+    def show_fit_evolution(self, coord='example', pause = 4., n_sigma=3):
         x_axis = self.coord(coord)
         plt.figure(figsize=(12,8))
         plt.plot(np.array(x_axis), np.array(self.loss), 'k-', alpha=.5)
-        limit = (np.array([.0625,.125,.25,.5,1]) * len(x_axis)).astype(int)
+        #limit = (np.array([.0625,.125,.25,.5,1]) * len(x_axis)).astype(int)
+        limit = (np.array([1]) * len(x_axis)).astype(int)
         plt.show(block = False)
+        ax = plt.gca()
         
         for l in limit:
-            popt, pcov = self.curve_fit(coord=coord, subset=slice(l))
+            print(f"Fitting range(0,{x_axis[l-1]})...")
+            popt, pcov = self.curve_fit(coord=coord, subset=slice(l))#, method='dogbox')
             perr = np.sqrt(np.diag(pcov))
+            print(popt)
+            print(perr)
             
             fn = lambda x : exp_fn(x, *popt)        
             curve = plt.plot(x_axis, fn(x_axis), 'g--')
             
-            bd = plt.axvline(x=l, ls='g:')
+            bd = plt.axvline(x=x_axis[l-1], c='g', ls=':')
             
-            ac = plt.axhline(y=popt[2], ls='r--')
-            a0 = plt.axhline(y=popt[2] - n_sigma * perr[2], ls='r:')
-            a1 = plt.axhline(y=popt[2] + n_sigma * perr[2], ls='r:')
+            #ac = plt.axhline(y=popt[2], c='r', ls='--')
+            #a0 = plt.axhline(y=popt[2] - n_sigma * perr[2], c='r', ls=':')
+            #a1 = plt.axhline(y=popt[2] + n_sigma * perr[2], c='r', ls=':')
+            
+            ax.relim()
+            ax.autoscale_view()
             
             plt.show(block = False)
             plt.pause(pause)
             
-            curve.remove()
+            for c in curve:
+                c.remove()
             bd.remove()
-            ac.remove()
-            a0.remove()
-            a1.remove()
+            #ac.remove()
+            #a0.remove()
+            #a1.remove()
             
         
 
@@ -612,8 +645,14 @@ class TestingHistory(BaseHistory):
         return d
         
 
+#def exp_fn(x, a, speed, limit):
+#    return a * np.exp(speed * x) + limit
 def exp_fn(x, a, speed, limit):
-    return a * np.exp(speed * x) + limit
+    return np.exp(a * np.exp(speed * x) + limit)
+#def exp_fn(x, a, speed, limit, k, w):
+#    return a * np.exp(speed * x) + limit + k / (x + w)
+#def exp_fn(x, k, w, limit):
+#    return limit + k / (x + w)
         
 
 # if function is called
@@ -621,6 +660,7 @@ if __name__ == '__main__':
     import sys
     if len(sys.argv) < 2:
         exit()
+    input("Exploring the evolution of exp fit over time...")
     history = TrainTestHistory(file=sys.argv[1])
     history.test.show_fit_evolution()
     input("Press Enter to continue...")
