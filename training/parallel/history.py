@@ -388,7 +388,7 @@ class TestingHistory(BaseHistory):
             self.mean_error_by_element = Array(file, 'mean_error_by_element')
             self.RMSE_by_element = Array(file, 'RMSE_by_element')
 
-            if self.relevant_elements != relevant_elements:
+            if len(self.relevant_elements) != len(relevant_elements):
                 print("relevant_elements has changed!")
                 if len(self.relevant_elements) < relevant_elements:
                     self.mean_error_by_element.resize_cross(len(relevant_elements))
