@@ -1,5 +1,6 @@
 import numpy as np
 import h5py
+from collections.abc import Sequence
 
 def mul_greater(c, x):
     return (x // c + 1) * c
@@ -193,8 +194,17 @@ class H5Array(h5py.Dataset):
         super().resize(len(self)+1, axis=0)
         self[-1] = value
         
-    def resize(self, length):
-        super().resize(length, axis=0)
+    def resize(self, size, axis=0):
+        super().resize(size, axis)
+        
+    def resize_cross(self, size, axis=None):
+        if axis is not None:
+            super().resize(size, axis+1)
+        elif isinstance(size, Sequence):
+            assert len(self.size) == len(size) + 1
+            self.resize(self.size[0], *size)
+        else:
+            self.resize(size, axis=1)
 
     
     
