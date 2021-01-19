@@ -93,8 +93,10 @@ class TrainTestHistory:
                 wandb_log=wandb_log, wandb_interval=wandb_interval, 
                 file=self.file['train'], hdf5=True, load=True)
             self.test = TestingHistory(
-                examples_per_epoch, testing_batches=testing_batches, device=device, failed=self.failed,
-                wandb_log=wandb_log, file=self.file['test'], hdf5=True, load=True)
+                examples_per_epoch, testing_batches=testing_batches,
+                relevant_elements=relevant_elements, device=device,
+                failed=self.failed, wandb_log=wandb_log,
+                file=self.file['test'], hdf5=True, load=True)
             
             if os.path.isfile(filename + '.bak'):
                 os.remove(filename + '.bak')
