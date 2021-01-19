@@ -391,8 +391,8 @@ class TestingHistory(BaseHistory):
             if self.relevant_elements != relevant_elements:
                 print("relevant_elements has changed!")
                 if len(self.relevant_elements) < relevant_elements:
-                    self.mean_error_by_element.resize(len(relevant_elements),1)
-                    self.RMSE_by_element.resize(len(relevant_elements),1)
+                    self.mean_error_by_element.resize_cross(len(relevant_elements))
+                    self.RMSE_by_element.resize_cross(len(relevant_elements))
                 self.relevant_elements = relevant_elements
 
         # if we have no testing batches, we won't be running tests, so no need to prep
