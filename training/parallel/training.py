@@ -390,7 +390,8 @@ def main():
             history = TrainTestHistory(
                 testing_batches, examples_per_epoch=training_size,
                 device=device, save_prefix=save_prefix, wandb_log=wandb_log,
-                wandb_interval=wandb_interval, hdf5=True, load=True)
+                wandb_interval=wandb_interval, hdf5=True, load=True,
+                relevant_elements=relevant_elements)
             start_epoch = history.train.current_epoch()
             example_in_epoch = history.train.next_example_in_epoch()
             example = history.train.example[-1]
@@ -405,6 +406,7 @@ def main():
             print(
                 f"Failed to load history from {save_prefix + '-history.torch'}")
             print(e)
+            traceback.print_tb(e.__traceback__)
             if input("Continue training with old model but new training history? (y/n) ").lower().strip() != 'y':
                 print("Exiting...")
                 pipeline.close()
