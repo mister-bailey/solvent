@@ -392,7 +392,6 @@ class TestingHistory(BaseHistory):
 
             # legacy code, shouldn't be used in newer history files!
             if (self.mean_error_by_element.maxshape[1] is not None) or (self.RMSE_by_element.maxshape[1] is not None):
-                print("hihihihihihihi")
                 mean_error_by_element = np.array(self.mean_error_by_element).copy()
                 RMSE_by_element = np.array(self.RMSE_by_element).copy()
                 del file['mean_error_by_element']
