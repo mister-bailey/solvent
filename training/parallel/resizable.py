@@ -202,9 +202,9 @@ class H5Array(h5py.Dataset):
             super().resize(size, axis+1)
         elif isinstance(size, Sequence):
             assert len(self.size) == len(size) + 1
-            self.resize(self.size[0], *size)
+            super.resize((self.size[0], *size))
         else:
-            self.resize(size, axis=1)
+            super.resize(size, axis=1)
 
     
     
