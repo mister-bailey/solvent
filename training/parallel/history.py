@@ -391,13 +391,13 @@ class TestingHistory(BaseHistory):
             self.RMSE_by_element = Array(file, 'RMSE_by_element')
 
             # legacy code, shouldn't be used in newer history files!
-            if (self.mean_error_by_element.maxshape[1] is not None) or (self.RMSE_by_element.maxshape[1] is not None):
-                mean_error_by_element = np.array(self.mean_error_by_element)
-                RMSE_by_element = np.array(self.RMSE_by_element)
-                self.mean_error_by_element = Array(file, 'mean_error_by_element', mean_error_by_element.shape, data=mean_error_by_element, dtype=float, resizable_cross=True)
-                self.RMSE_by_element = Array(file, 'RMSE_by_element', RMSE_by_element.shape, data=RMSE_by_element, dtype=float, resizable_cross=True)
-                #self.mean_error_by_element[:] = mean_error_by_element
-                #self.RMSE_by_element[:] = RMSE_by_element
+#            if (self.mean_error_by_element.maxshape[1] is not None) or (self.RMSE_by_element.maxshape[1] is not None):
+            mean_error_by_element = np.array(self.mean_error_by_element)
+            RMSE_by_element = np.array(self.RMSE_by_element)
+            self.mean_error_by_element = Array(file, 'mean_error_by_element', mean_error_by_element.shape, data=mean_error_by_element, dtype=float, resizable_cross=True)
+            self.RMSE_by_element = Array(file, 'RMSE_by_element', RMSE_by_element.shape, data=RMSE_by_element, dtype=float, resizable_cross=True)
+            #self.mean_error_by_element[:] = mean_error_by_element
+            #self.RMSE_by_element[:] = RMSE_by_element
 
             # allows the resizing of by-element data arrays if relevant elements change
             if relevant_elements is not None and len(self.relevant_elements) != len(relevant_elements):
