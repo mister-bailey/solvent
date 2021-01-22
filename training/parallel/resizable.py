@@ -150,7 +150,7 @@ class H5Array(h5py.Dataset):
     default_chunk_size = 256
     default_compression = 'gzip'
             
-    def __init__(self, h5, name, arg1=None, chunk_size=None, **kwargs):
+    def __init__(self, h5, name, arg1=None, chunk_size=None, resizable_cross=False, **kwargs):
         data = None
         if isinstance(arg1, tuple):
             shape = arg1
@@ -174,7 +174,8 @@ class H5Array(h5py.Dataset):
             chunk_size = H5Array.default_chunk_size
         self.cross_shape = shape[1:]
         kwargs['shape'] = shape
-        kwargs['maxshape'] = (None, *self.cross_shape)
+        kwargs['maxshape'] = tuple(None for _ in shape) if resizable_cross else (None, *self.cross_shape)
+        self.__resizable_cross = resizable_cross
         kwargs['chunks'] = (chunk_size, *self.cross_shape)
         if 'compression' not in kwargs:
             kwargs['compression'] = H5Array.default_compression
@@ -197,11 +198,16 @@ class H5Array(h5py.Dataset):
     def resize(self, size, axis=0):
         super().resize(size, axis)
         
+    @property
+    def resizable_cross(self):
+        return self.__resizable_cross
+        
     def resize_cross(self, size, axis=None):
+        assert self.resizable_cross, "This H5PY Array can't resize its cross-section!"
         if axis is not None:
             super().resize(size, axis+1)
         elif isinstance(size, Sequence):
-            assert len(self.size) == len(size) + 1
+            assert len(self.size) == len(size) + 1, "New cross section is wrong number of dimensions."
             super().resize((self.size[0], *size))
         else:
             super().resize(size, axis=1)

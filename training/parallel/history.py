@@ -374,8 +374,8 @@ class TestingHistory(BaseHistory):
             self.example = Array(file, 'example', dtype=int)
             self.elapsed_time = Array(file, 'elapsed_time', dtype=float)
             self.loss = Array(file, 'loss', dtype=float)
-            self.mean_error_by_element = Array(file, 'mean_error_by_element', (0,len(relevant_elements)), dtype=float)
-            self.RMSE_by_element = Array(file, 'RMSE_by_element', (0,len(relevant_elements)), dtype=float)
+            self.mean_error_by_element = Array(file, 'mean_error_by_element', (0,len(relevant_elements)), dtype=float, resizable_cross=True)
+            self.RMSE_by_element = Array(file, 'RMSE_by_element', (0,len(relevant_elements)), dtype=float, resizable_cross=True)
         else:
             self.relevant_elements = file.attrs['relevant_elements']
             self.store_residuals = file.attrs['store_residuals']
@@ -390,6 +390,16 @@ class TestingHistory(BaseHistory):
             self.mean_error_by_element = Array(file, 'mean_error_by_element')
             self.RMSE_by_element = Array(file, 'RMSE_by_element')
 
+            # legacy code, shouldn't be used in newer history files!
+            if not (self.mean_error_by_element.resizable_cross and self.RMSE_by_element.resizable_cross):
+                mean_error_by_element = np.array(self.mean_error_by_element)
+                RMSE_by_element = np.array(self.RMSE_by_element)
+                self.mean_error_by_element = Array(file, 'mean_error_by_element', mean_error_by_element.shape, dtype=float, resizable_cross=True)
+                self.RMSE_by_element = Array(file, 'RMSE_by_element', RMSE_by_element.shape, dtype=float, resizable_cross=True)
+                self.mean_error_by_element[:] = mean_error_by_element
+                self.RMSE_by_element[:] = RMSE_by_element
+
+            # allows the resizing of by-element data arrays if relevant elements change
             if relevant_elements is not None and len(self.relevant_elements) != len(relevant_elements):
                 print("relevant_elements has changed!")
                 if len(self.relevant_elements) < len(relevant_elements):
