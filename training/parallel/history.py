@@ -392,7 +392,7 @@ class TestingHistory(BaseHistory):
 
             if relevant_elements is not None and len(self.relevant_elements) != len(relevant_elements):
                 print("relevant_elements has changed!")
-                if len(self.relevant_elements) < relevant_elements:
+                if len(self.relevant_elements) < len(relevant_elements):
                     self.mean_error_by_element.resize_cross(len(relevant_elements))
                     self.RMSE_by_element.resize_cross(len(relevant_elements))
                 self.relevant_elements = relevant_elements
