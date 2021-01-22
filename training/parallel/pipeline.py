@@ -126,6 +126,9 @@ class Pipeline():
         
         # Tracking what's already been sent through the pipe:
         self._example_number = Value('i', 0)
+        
+        # The final kill switch:
+        self._close = Value('i', 0)
 
         self.command_queue = manager.Queue(10)
         self.molecule_pipeline = None
@@ -209,13 +212,16 @@ class Pipeline():
             return self._example_number.value
 
     def close(self):
-        self.dataset_reader.terminate()
-        self.dataset_reader.join()
+        self.command_queue.put(CloseReader())
+        with self._close.get_lock():
+            self._close.value = True
+        self.dataset_reader.join(2)
+        self.dataset_reader.kill()
 
     # methods for DatasetReader:
     def get_command(self):
         return self.command_queue.get()
-
+        
     def put_molecule_to_ext(self, m, block=True):
         r = self.molecule_pipeline.put_molecule(m, block)
         if not r:
@@ -261,7 +267,10 @@ class Pipeline():
         if self.share_batches:
             x.share_memory_()
         self.batch_queue.put(x)
-
+        
+    def time_to_close(self):
+        with self._close.get_lock():
+            return self._close.value
 
 class DatasetSignal():
     def __str__(self):
@@ -274,6 +283,10 @@ class ScanTo(DatasetSignal):
 
     def __str__(self):
         return f"ScanTo({self.index})"
+        
+class CloseReader(DatasetSignal):
+    def __init__(self, aggressive=False):
+        self.aggressive = aggressive
 
 
 class StartReading(DatasetSignal):
@@ -306,18 +319,7 @@ class SetShuffle(DatasetSignal):
     
     def __str__(self):
         return f"SetShuffle({self.shuffle_incoming})"
-
-
-#class ReadTestSet(DatasetSignal):
-#    def __init__(self, record_in_dict=True, batch_size=1):
-#        self.record_in_dict = record_in_dict
-#        self.batch_size = batch_size
-#
-#    def __str__(self):
-#        return f"ReadTestSet(record_in_dict={self.record_in_dict}, batch_size={self.batch_size})"
-
-# process that reads an hdf5 file and returns Molecules
-
+        
 
 class DatasetReader(Process):
     def __init__(self, name, pipeline, config, shuffle_incoming=False, new_process=True, requested_jiggles=1):
@@ -396,6 +398,8 @@ class DatasetReader(Process):
                 self.indices = command.indices
             elif isinstance(command, SetShuffle):
                 self.shuffle_incoming = command.shuffle_incoming
+            elif isinstance(command, CloseReader):
+                return
             else:
                 raise ValueError("unexpected work type")
             self.pipeline.working.release()
@@ -431,8 +435,10 @@ class DatasetReader(Process):
                             dataset[..., 3], dataset.attrs["atomic_numbers"],
                             weights=dataset.attrs["weights"])
                     self.pipeline.put_molecule_to_ext(molecule)
-                    #if record_in_dict:
-                    #    self.testing_molecules_dict[molecule.ID] = molecule
+
+                    # ABORT if we are exiting training
+                    if self.pipeline.time_to_close():
+                        return examples_to_read
 
                     while self.pipeline.ext_batch_ready():
                         self.pipeline.put_batch(
@@ -476,6 +482,11 @@ class DatasetReader(Process):
                     #if record_in_dict:
                     #    self.testing_molecules_dict[molecule.ID] = molecule
                 examples_read += 1
+                
+                # ABORT if we are exiting training
+                if self.pipeline.time_to_close():
+                    return examples_to_read
+                    
                 while self.pipeline.ext_batch_ready():
                     bad_call = self.pipeline.get_batch_from_ext()
                     self.pipeline.put_batch(bad_call)
