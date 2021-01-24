@@ -387,8 +387,8 @@ class TestingHistory(BaseHistory):
             self.example = Array(file, 'example')
             self.elapsed_time = Array(file, 'elapsed_time')
             self.loss = Array(file, 'loss')
-            self.mean_error_by_element = Array(file, 'mean_error_by_element')
-            self.RMSE_by_element = Array(file, 'RMSE_by_element')
+            self.mean_error_by_element = Array(file, 'mean_error_by_element', resizable_cross=True)
+            self.RMSE_by_element = Array(file, 'RMSE_by_element', resizable_cross=True)
 
             # legacy code, shouldn't be used in newer history files!
             if (self.mean_error_by_element.maxshape[1] is not None) or (self.RMSE_by_element.maxshape[1] is not None):
