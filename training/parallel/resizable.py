@@ -150,7 +150,7 @@ class H5Array(h5py.Dataset):
     default_chunk_size = 256
     default_compression = 'gzip'
             
-    def __init__(self, h5, name, arg1=None, chunk_size=None, resizable_cross=False, **kwargs):
+    def __init__(self, h5, name, arg1=None, chunk_size=None, resizable_cross=None, **kwargs):
         data = None
         if isinstance(arg1, tuple):
             shape = arg1
@@ -174,8 +174,9 @@ class H5Array(h5py.Dataset):
             chunk_size = H5Array.default_chunk_size
         self.cross_shape = shape[1:]
         kwargs['shape'] = shape
+        if resizable_cross is None and name in h5 and h5[name].maxshape[1] is None:
+            resizable_cross = True
         kwargs['maxshape'] = tuple(None for _ in shape) if resizable_cross else (None, *self.cross_shape)
-        self.__resizable_cross = resizable_cross
         kwargs['chunks'] = (chunk_size, *self.cross_shape)
         if 'compression' not in kwargs:
             kwargs['compression'] = H5Array.default_compression
@@ -200,7 +201,7 @@ class H5Array(h5py.Dataset):
         
     @property
     def resizable_cross(self):
-        return self.__resizable_cross
+        return len(self.maxshape)>1 and self.maxshape[1] is None
         
     def resize_cross(self, size, axis=None):
         assert self.resizable_cross, "This H5PY Array can't resize its cross-section!"
