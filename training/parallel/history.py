@@ -82,7 +82,7 @@ class TrainTestHistory:
                     
             self.failed = self.file.attrs['failed']
             self.name = self.file.attrs['name']
-            if 'examples_per_epoch' in self.file.attrs:
+            if 'examples_per_epoch' in self.file.attrs and examples_per_epoch is None:
                 examples_per_epoch = self.file.attrs['examples_per_epoch']
             else:
                 self.file.attrs['examples_per_epoch'] = examples_per_epoch
