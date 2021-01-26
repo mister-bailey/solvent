@@ -174,7 +174,7 @@ class H5Array(h5py.Dataset):
             chunk_size = H5Array.default_chunk_size
         self.cross_shape = shape[1:]
         kwargs['shape'] = shape
-        if resizable_cross is None and name in h5 and size(h5[name].maxshape) > 1 and h5[name].maxshape[1] is None:
+        if resizable_cross is None and name in h5 and len(h5[name].maxshape) > 1 and h5[name].maxshape[1] is None:
             resizable_cross = True
         kwargs['maxshape'] = tuple(None for _ in shape) if resizable_cross else (None, *self.cross_shape)
         kwargs['chunks'] = (chunk_size, *self.cross_shape)
