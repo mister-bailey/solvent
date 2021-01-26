@@ -16,6 +16,7 @@ import os
 from shutil import copyfile
 import h5py
 from scipy.optimize import curve_fit
+import statistics
 
 n_to_s = {
 1:'H',
@@ -125,8 +126,8 @@ class TrainTestHistory:
         # x_axis = 'time' is also allowed
         if figure is None:
             plt.figure(figsize=(12,8))
-        self.train.plot(figure, x_axis, y_axis)
-        self.test.plot(figure, x_axis)
+        self.train.plot(plt.gcf(), x_axis, y_axis)
+        self.test.plot(plt.gcf(), x_axis)
         if figure is None:
             plt.legend(loc="best")
             if show:
@@ -525,46 +526,69 @@ class TestingHistory(BaseHistory):
         else:
             raise ValueError("Argument 'coord' should be 'time' or 'example'")
                 
-    def loss_interpolate(self, x, coord='time', window=5):
+    def log_loss_interpolate(self, x, coord='time'):
         x_array = self.coord(coord)
-        i = bisect.bisect_right(x_array, x) 
-        if i > 0 and x_array[i-1] == x:
-            return self.smoothed_loss(i, window)
-        if i==0 or i==len(x_array):
-            raise ValueError(coord.capitalize() + " coordinate is out of bounds.")
+        if x < x_array[0] or x > x_array[-1]:
+            raise ValueError(f"Requested {coord} {x} is out of bounds")
+        i = np.searchsorted(x_array, side='left') 
+        if x_array[i] == x:
+            return np.log(self.loss[i])
         x1 = x_array[i-1]
         x2 = x_array[i]
         s = (x2 - x) / (x2 - x1)
-        return s * self.smoothed_loss(i-1, window) + (1-s) * self.smoothed_loss(i, window)
+        return s * np.log(self.loss[i-1]) + (1-s) * np.log(self.loss[i])
 
-    def loss_extrapolate(self, x, histories, coord='time', window=5):
+    def log_loss_extrapolate(self, x, others, coord='time', decay=.25, x0=None, x1=None, log_avg=None, other_avgs=None):
         if self.failed or len(self.loss) == 0:
             return float("nan")
-        last_x = self.coord(coord)[-1]
-        assert x > last_x, f"Tried to extrapolate, but given {coord} is within bounds."
-        last_loss = self.smoothed_loss(-1, window)
-        losses = []
-        for h in histories:
-            if h.coord(coord) >= x and h is not self:
-                losses.append(h.loss_interpolate(x, coord, window) * last_loss / h.loss_interpolate(last_x, coord, window))
-        assert losses, "Extrapolating beyond farthest history."
-        return sum(losses) / len(losses)
+        others = [h for h in others if h.coord(coord)[-1] >= x]
+        if x0 is None:
+            x0 = max(self.coord(coord)[0], *(h.coord(coord)[0] for h in others))
+        if x1 is None:
+            x1 = self.coord(coord)[-1]
+        assert x >= x1, f"Tried to extrapolate, but given {coord} is within bounds."
+        if log_avg is None:
+            log_avg = self.log_average_loss(x0,x1,coord,decay)
+        if other_avgs is None:
+            other_avgs = [h.log_average_loss(self, x0, x1, coord, decay) for h in others]
         
-    def relative_loss(self, other, x, coord='time', window=5):
+        log_ext = log_avg - statistics.mean(other_avgs) + statistics.mean(h.log_loss_interpolate(self, x, coord) for h in others)
+        return log_ext
+        
+    def log_relative_loss(self, other, coord='time', decay=.25):
         if self.failed or len(self.loss) == 0:
             return float("nan")
-        last_x = min(self.coord(coord)[-1], x)
-        last_i = 0
-        weights = 0
+        sx = self.coord(coord)
+        ox = other.coord(coord)
+        x0 = max(sx[0],ox[0])
+        x1 = min(sx[-1],ox[-1])
+        return self.log_average_loss(x0,x1,coord,decay) - other.log_average_loss(x0,x1,coord,decay)
+        
+    def log_average_loss(self, x0, x1, coord='time', decay=.25):
+        x = self.coord(coord)
+        assert x1 <= x[-1] and x0 >= x[0], "Can't average outside of range"
+        if decay < 1.:
+            decay = (x1 - x0) * decay
+        i0 = np.searchsorted(x, x0, side='left') # coord[i0] <= x0
+        i1 = np.searchsorted(x, x1, side='right') # coord[i1] >= x1
+        
+        # In the generic case where x0 and x1 lie between
+        # coords, and i1 - i0 = N,
+        # d[0] will be a fraction segment
+        # as will d[N]
+        d = np.diff(x[i0:i1],prepend=x0,append=x1) * np.exp(x1 - x[i0:i1+1])
+        
+        log_avg = d * np.log(self.loss[i0:i1+1]) / np.sum(d)
+        return log_avg
     
     def plot(self, figure=None, x_axis='example',
              curve_fit=False, asymptote=False,
-             color='b', fit_color='g', asymptote_color='r', show=True, **kwargs): # x_axis = 'time' is also allowed
+             color='b', fit_color='g', asymptote_color='r', label="test", show=True, **kwargs): # x_axis = 'time' is also allowed
         #x_axis = self.example if x_axis=='example' else self.elapsed_time
         x_axis = self.coord(x_axis)
         if figure is None:
             plt.figure(figsize=(12,8))
-        plt.plot(np.array(x_axis), np.array(self.loss), f'{color}o-', label="test", **kwargs)
+        plt.plot(np.array(x_axis), np.array(self.loss), f'{color}-', label=label, **kwargs)
         if curve_fit:
             self.plot_curve_fit(color=fit_color, **kwargs)
         if asymptote:

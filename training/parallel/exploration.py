@@ -10,14 +10,13 @@ import bayes_search as bayes
 from exploration_policy import random_parameters_and_seed, generate_parameters, proceed_with_training, next_training_limit, order_runs as order_runs_policy
 from sample_hyperparameters import TrainableSampleGenerator
 import numpy as np
-import matplotlib as plt
+import matplotlib.pyplot as plt
 from itertools import cycle
 
 class TrainingRun:
     def __init__(self, parent_dir="runs", identifier=None, config_file=None, settings={},
-                 create_file=True, create_identifier=True, parent_configs=['exploration.ini']):
-        self.parent_configs = parent_configs
-        #self.settings = {k:str(v) for k,v in settings.items()} # may need to allow alternate string conversions
+                 create_file=True, create_identifier=True, parent_configs=['exploration.ini'], save_prefix=None):
+        settings = settings.copy() # To avoid accumulating same settings from one run to another!
 
         if identifier is None:
             if settings != {} and create_identifier:
@@ -27,18 +26,33 @@ class TrainingRun:
             else:
                 raise Exception("No training run identifier provided!")
         self.identifier = identifier
-
         self.run_dir = os.path.join(parent_dir, identifier)
         os.makedirs(self.run_dir, exist_ok=True)
-        self.save_prefix = os.path.join(self.run_dir, identifier[:7])
-
-        settings = update(settings, {'training':{'save_prefix':self.save_prefix, 'resume':True}})
-
+        
         if config_file is None:
             config_file = os.path.join(self.run_dir, "training.ini")
         self.config_file = config_file
-        self.set_config(settings)
+        
+        if os.path.isfile(config_file):
+            parser = ConfigParser(allow_no_value=True)
+            parser.read([config_file])
+            parser.read_dict(settings)
+            if "training" in parser:
+                #if "run_name" in parser["training"]:
+                #    identifier = parser["training"]["run_name"]
+                if "save_prefix" in parser["training"]:
+                    save_prefix = parser["training"]["save_prefix"]
+            del parser
+        self.parent_configs = parent_configs
+        #self.settings = {k:str(v) for k,v in settings.items()} # may need to allow alternate string conversions
 
+        if save_prefix is None:
+            save_prefix = os.path.join(self.run_dir, identifier[:7])
+        self.save_prefix = save_prefix
+
+        settings = update(settings, {'training':{'save_prefix':self.save_prefix, 'run_name':self.identifier, 'resume':True}})
+
+        self.set_config(settings)
         self.__history = None
         
     @property
@@ -177,11 +191,12 @@ class TrainingRun:
         self.history.save()        
         print("Displaying graph...")
         self.history.test.plot(curve_fit=True, asymptote=True)
+        self.close_history()
             
         
         
-    def __del__(self):
-        self.close_history()
+    #def __del__(self):
+    #    self.close_history()
         
 class EnsembleOfRuns:
 
@@ -374,6 +389,7 @@ class EnsembleOfRuns:
             
     def plot_active_runs(self, run=None):
         plt.figure(figsize=(12,8))
+        axes = plt.gca()
         runs = list(self.active_runs.values())
         if run is not None:
             if run in runs:
@@ -386,13 +402,13 @@ class EnsembleOfRuns:
         
         for r in runs:
             c = next(color)
-            r.history.test.plot(show=False, color=c, alpha = .5 * alpha)
-            r.history.test.plot_curve_fit(show=False, color=c, alpha = alpha)
+            r.history.test.plot(axes, show=False, color=c, alpha = .5 * alpha, label = r.identifier)
+            #r.history.test.plot_curve_fit(show=False, color=c, alpha = alpha)
             
         if run is not None:
-            run.history.test.plot(show=False, color='k', alpha = .5)
+            run.history.test.plot(axes, show=False, color='k', alpha = .5, label = run.identifier)
             run.history.test.plot_curve_fit(show=False, color='k', alpha = 1.)
-            run.history.test.plot_asymptote(show=False, color='r')
+            #run.history.test.plot_asymptote(show=False, color='r')
         
         plt.legend(loc="best")
         plt.show()
@@ -430,6 +446,8 @@ class EnsembleOfRuns:
         b_losses = self.extrapolated_losses(coord='example', smoothing=smoothing, active_only=active_only)
         return {name:inv(t_coeff * trn(t_losses[name]) + trn((1-t_coeff) * b_losses[name])) for name in t_losses}
     
+    # Deprecated
+    # asymptotes and exponential models don't work
     def asymptotes(self, coord='example', active_only=False):
         runs = self.active_runs if active_only else self.runs
         return {name:run.history.test.asymptote(coord=coord) for name,run in runs.values()}
@@ -453,16 +471,17 @@ def merge_dicts(*dicts):
 
 
 if __name__ == '__main__':
-    # do something here
-    #configs = sys.argv[1:] if len(sys.argv) > 1 else ["exploration.ini"]
-    #ensemble = EnsembleOfRuns(configs = configs)
-    #ensemble.training_cycle(10)
-    settings, seed = random_parameters_and_seed()
-    print("Simulating random run:")
-    print(settings)
-    settings = update(settings, {'exploration':{'seed':seed}})    
-    run = TrainingRun(settings=settings)
-    run.execute_stub()
+    if len(sys.argv) > 1:
+        parent_dir = sys.argv[1]
+        ensemble = EnsembleOfRuns(parent_dir=parent_dir)
+        ensemble.plot_active_runs()    
+    else:
+        settings, seed = random_parameters_and_seed()
+        print("Simulating random run:")
+        print(settings)
+        settings = update(settings, {'exploration':{'seed':seed}})    
+        run = TrainingRun(settings=settings)
+        run.execute_stub()
 
 
     
