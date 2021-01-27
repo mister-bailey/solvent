@@ -407,11 +407,46 @@ class EnsembleOfRuns:
             
         if run is not None:
             run.history.test.plot(axes, show=False, color='k', alpha = .5, label = run.identifier)
-            run.history.test.plot_curve_fit(show=False, color='k', alpha = 1.)
+            #run.history.test.plot_curve_fit(show=False, color='k', alpha = 1.)
             #run.history.test.plot_asymptote(show=False, color='r')
         
         plt.legend(loc="best")
         plt.show()
+        
+    def plot_extrapolation(self, run, x, coord='example'):
+        plt.figure(figsize=(12,8))
+        axes = plt.gca()
+        runs = list(self.active_runs.values())
+        if run in runs:
+            runs.remove(run)
+        alpha = 1.
+        color = cycle("bgcmy")
+        
+        others = [r.history.test for r in runs]
+        for r in runs:
+            c = next(color)
+            r.history.test.plot(axes, show=False, color=c, alpha = .5 * alpha, label = r.identifier)
+            #test.plot_curve_fit(show=False, color=c, alpha = alpha)
+        
+        test = run.history.test
+        x_axis = test.coord(coord)
+        interval = x_axis[-1] - x_axis[-2]
+        new_x = np.arange(x_axis[-1] + interval, x, interval)
+        new_loss = np.zeros_like(new_x).astype(float)
+        
+        log_avg, other_avgs = None, None
+        for i in range(len(new_x)):
+            log_ext, log_avg, other_avgs, others = test.log_loss_extrapolate(new_x[i], others, coord, log_avg=log_avg, other_avgs=other_avgs)        
+            new_loss[i] = np.exp(log_ext)
+            
+        test.plot(axes, show=False, color='k', alpha = .5, label = run.identifier)
+        plt.plot(new_x,new_loss,'r:', label='extrapolate')
+        
+        plt.legend(loc="best")
+        plt.show()
+     
+        
+        
             
         
     # Deprecated
@@ -474,7 +509,11 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         parent_dir = sys.argv[1]
         ensemble = EnsembleOfRuns(parent_dir=parent_dir)
-        ensemble.plot_active_runs()    
+        if len(sys.argv) > 2:
+            run = ensemble.runs[sys.argv[2]]
+            ensemble.plot_extrapolation(run, 2500000)
+        else:  
+            ensemble.plot_active_runs()    
     else:
         settings, seed = random_parameters_and_seed()
         print("Simulating random run:")

@@ -526,11 +526,11 @@ class TestingHistory(BaseHistory):
         else:
             raise ValueError("Argument 'coord' should be 'time' or 'example'")
                 
-    def log_loss_interpolate(self, x, coord='time'):
+    def log_loss_interpolate(self, x, coord='example'):
         x_array = self.coord(coord)
         if x < x_array[0] or x > x_array[-1]:
             raise ValueError(f"Requested {coord} {x} is out of bounds")
-        i = np.searchsorted(x_array, side='left') 
+        i = np.searchsorted(x_array, x, side='left') 
         if x_array[i] == x:
             return np.log(self.loss[i])
         x1 = x_array[i-1]
@@ -538,10 +538,13 @@ class TestingHistory(BaseHistory):
         s = (x2 - x) / (x2 - x1)
         return s * np.log(self.loss[i-1]) + (1-s) * np.log(self.loss[i])
 
-    def log_loss_extrapolate(self, x, others, coord='time', decay=.25, x0=None, x1=None, log_avg=None, other_avgs=None):
+    def log_loss_extrapolate(self, x, histories, coord='example', decay=.25, x0=None, x1=None, log_avg=None, other_avgs=None):
         if self.failed or len(self.loss) == 0:
             return float("nan")
-        others = [h for h in others if h.coord(coord)[-1] >= x]
+        others = [h for h in histories if h.coord(coord)[-1] >= x]
+        if others != histories:
+            log_avg=None
+            other_avgs=None
         if x0 is None:
             x0 = max(self.coord(coord)[0], *(h.coord(coord)[0] for h in others))
         if x1 is None:
@@ -550,12 +553,12 @@ class TestingHistory(BaseHistory):
         if log_avg is None:
             log_avg = self.log_average_loss(x0,x1,coord,decay)
         if other_avgs is None:
-            other_avgs = [h.log_average_loss(self, x0, x1, coord, decay) for h in others]
+            other_avgs = [h.log_average_loss(x0, x1, coord, decay) for h in others]
         
-        log_ext = log_avg - statistics.mean(other_avgs) + statistics.mean(h.log_loss_interpolate(self, x, coord) for h in others)
-        return log_ext
+        log_ext = log_avg - statistics.mean(other_avgs) + statistics.mean(h.log_loss_interpolate(x, coord) for h in others)
+        return log_ext, log_avg, other_avgs, others
         
-    def log_relative_loss(self, other, coord='time', decay=.25):
+    def log_relative_loss(self, other, coord='example', decay=.25):
         if self.failed or len(self.loss) == 0:
             return float("nan")
         sx = self.coord(coord)
@@ -564,21 +567,25 @@ class TestingHistory(BaseHistory):
         x1 = min(sx[-1],ox[-1])
         return self.log_average_loss(x0,x1,coord,decay) - other.log_average_loss(x0,x1,coord,decay)
         
-    def log_average_loss(self, x0, x1, coord='time', decay=.25):
+    def log_average_loss(self, x0, x1, coord='example', decay=.25):
         x = self.coord(coord)
         assert x1 <= x[-1] and x0 >= x[0], "Can't average outside of range"
         if decay < 1.:
             decay = (x1 - x0) * decay
         i0 = np.searchsorted(x, x0, side='left') # coord[i0] <= x0
-        i1 = np.searchsorted(x, x1, side='right') # coord[i1] >= x1
+        i1 = np.searchsorted(x, x1, side='left') # coord[i1] >= x1
         
         # In the generic case where x0 and x1 lie between
         # coords, and i1 - i0 = N,
         # d[0] will be a fraction segment
         # as will d[N]
-        d = np.diff(x[i0:i1],prepend=x0,append=x1) * np.exp(x1 - x[i0:i1+1])
+        #print(f"i0={i0}, i1={i1}")
+        #print(f"x0={x0}, x1={x1}")
+        #print(np.diff(x[i0:i1],prepend=x0,append=x1))
+        #print(np.exp((x[i0:i1+1] - x1)/decay))
+        d = np.diff(x[i0:i1],prepend=x0,append=x1) * np.exp((x[i0:i1+1] - x1)/decay)
         
-        log_avg = d * np.log(self.loss[i0:i1+1]) / np.sum(d)
+        log_avg = (np.sum(d * np.log(self.loss[i0:i1+1])) / np.sum(d)).item()
         return log_avg
     
     def plot(self, figure=None, x_axis='example',
