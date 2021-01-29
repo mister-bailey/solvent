@@ -367,9 +367,9 @@ def main():
             wb_cfg.write(wb_configfile)
             
         if 'id' in wb_cfg['wandb']:
-            wandb.init(name=run_name, group=config.exploration.group_name, project=config.project, dir=save_dir, resume='allow', id=wb_cfg['wandb']['id'])
+            wandb_run = wandb.init(name=run_name, group=config.exploration.group_name, project=config.project, dir=save_dir, resume='allow', id=wb_cfg['wandb']['id'])
         else:
-            wandb.init(name=run_name, group=config.exploration.group_name, project=config.project, dir=save_dir, resume='allow')
+            wandb_run = wandb.init(name=run_name, group=config.exploration.group_name, project=config.project, dir=save_dir, resume='allow')
 
         wandb.config.batch_size = config.training.batch_size
         wandb.config.learning_rate = config.training.learning_rate
@@ -455,7 +455,11 @@ def main():
         history.close()
         if os.name == 'nt':
             listener.stop()
+        print("Closing pipeline...")
         pipeline.close()
+        if use_wandb:
+            print("Finishing WandB...")
+            wandb_run.finish()
         print(f"Exiting with exit code {exit_code}.")
         exit(exit_code)    
     
