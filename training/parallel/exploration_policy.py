@@ -5,6 +5,7 @@ import math
 
 # Answers whether or not it is worth continuing to train 'run'
 def proceed_with_training(ensemble, run):
+    return True
     # Some handy values accumulated here    
     asymptotes_dict = ensemble.asymptotes(active_only = True)
     asymptote = asymptotes_dict[run.identifier]
@@ -25,30 +26,29 @@ def proceed_with_training(ensemble, run):
     ##################################
 
 # Returns new values (max_time, max_example)
-def next_training_limit(ensemble):
-    # Possibly useful values here
+def next_training_limit(ensemble, step=None):
     config = ensemble.config.exploration
-    max_time = config.max_time
-    max_example = config.max_example
-    time_increment = config.time_increment
-    example_increment = config.example_increment
+
+    if config.example_schedule is not None and step < len(config.example_schedule):
+        new_example = config.example_schedule[step]
+    else:
+        new_example = config.max_example * 2
     
-    if max_time is None:
-        new_time = time_increment
+    if config.time_schedule is not None and step < len(config.time_schedule):
+        new_time = config.time_schedule[step]
     else:
-        new_time = max_time * 2
-        
-    if max_example is None:
-        new_example = example_increment
-    else:
-        new_example = max_example * 2
-        
+        new_time = config.max_time * 2
+    
     return new_time, new_example
     
 
 # puts runs in order of how well they're performing; 0th is best
+#def order_runs(ensemble, runs):
+#    return sorted(runs, key=lambda r: r.history.test.asymptote[0])
+
 def order_runs(ensemble, runs):
-    return sorted(runs, key=lambda r: r.history.test.asymptote[0])
+    losses = ensemble.mixed_log_losses()
+    return sorted(runs, key = lambda r : losses[r.identifier])
     
 
 import random

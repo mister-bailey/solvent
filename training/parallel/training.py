@@ -367,9 +367,9 @@ def main():
             wb_cfg.write(wb_configfile)
             
         if 'id' in wb_cfg['wandb']:
-            wandb.init(name=run_name, project=config.project, dir=save_dir, resume='allow', id=wb_cfg['wandb']['id'])
+            wandb.init(name=run_name, group=config.exploration.group_name, project=config.project, dir=save_dir, resume='allow', id=wb_cfg['wandb']['id'])
         else:
-            wandb.init(name=run_name, project=config.project, dir=save_dir, resume='allow')
+            wandb.init(name=run_name, group=config.exploration.group_name, project=config.project, dir=save_dir, resume='allow')
 
         wandb.config.batch_size = config.training.batch_size
         wandb.config.learning_rate = config.training.learning_rate

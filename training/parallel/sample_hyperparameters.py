@@ -18,6 +18,7 @@ from exploration_policy import random_parameters_and_seed, generate_parameters
 class TrainableSampleGenerator:
     
     def __init__(self, filename=None, configs=['exploration.ini'], num_batches=2, stub=False):
+        print(f"TrainableSampleGenerator({filename})")
         self.filename=filename
         self.config_files=configs
         self.__config = None
@@ -54,13 +55,13 @@ class TrainableSampleGenerator:
         current_passes = self.num_passes
         if increment and num_samples is not None:
             for n in list(range(current_samples, num_samples, increment))[1:] + [num_samples]:
-                self.sample(num_samples=n, verbose_test=verbose_test, save=save)
+                self.sample(num_samples=n, verbose_test=verbose_test, increment=None, save=save)
             return
         elif increment and num_passes is not None:
             for n in list(range(current_passes, num_passes, increment))[1:] + [num_passes]:
-                self.sample(num_passes=n, verbose_test=verbose_test, save=save)
+                self.sample(num_passes=n, verbose_test=verbose_test, increment=None, save=save)
             return
-        
+               
         if num_samples is None:
             size = current_samples + num_passes - current_passes
         else:
@@ -80,6 +81,7 @@ class TrainableSampleGenerator:
                     current_passes += 1
                     if verbose: print(f"*********** {current_passes:5d}  ***********")
                     if num_passes is not None and current_passes >= num_passes:
+                        self.num_passes = current_passes
                         if save: self.save()
                         return
                 else:
@@ -103,7 +105,9 @@ class TrainableSampleGenerator:
     @staticmethod
     def load(file):
         if os.path.isfile(file):
-            return torch.load(file)
+            x = torch.load(file)
+            x.seeds = x.seeds.copy()
+            x.passed = x.passed.copy()
         else:
             return None
     

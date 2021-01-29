@@ -1,4 +1,4 @@
-from training_config import Config, secs_to_str, update, immut
+from training_config import Config, secs_to_str, update#, immut
 from configparser import ConfigParser
 import os
 import sys
@@ -19,8 +19,8 @@ class TrainingRun:
         settings = settings.copy() # To avoid accumulating same settings from one run to another!
 
         if identifier is None:
-            if settings != {} and create_identifier:
-                identifier = "run-" + hex(hash(immut(settings)))[-8:]
+            if create_identifier:
+                identifier = "run-" + hex(random.randrange(16**8))[-8:]
                 if os.path.isdir(os.path.join(parent_dir, identifier)):
                     raise Exception(f"Hash collision with existing training run {identifier}")
             else:
@@ -63,6 +63,11 @@ class TrainingRun:
                     self.__history = TrainTestHistory(save_prefix = self.save_prefix, load=True, use_backup=False)
                 except:
                     self.__history = None
+            else:
+                self.__history = TrainTestHistory(
+                    device=self.config.device, examples_per_epoch=self.config.data.training_size,
+                    relevant_elements=self.config.relevant_elements, run_name=self.identifier,
+                    save_prefix=self.config.training.save_prefix, hdf5=True, load=False)
         return self.__history
         
     def close_history(self):
@@ -98,7 +103,7 @@ class TrainingRun:
     
     @property
     def time(self):
-        return self.history.train.max_time()
+        return self.history.train.elapsed_time[-1]
         
     @property
     def examples(self):
@@ -148,7 +153,8 @@ class TrainingRun:
         
         if self.history is None:
             self.__history = TrainTestHistory(
-                examples_per_epoch=1000000, relevant_elements=[6,1],
+                examples_per_epoch=self.config.data.training_size,
+                relevant_elements=self.config.relevant_elements,
                 save_prefix = self.save_prefix, run_name=self.identifier,
                 load=False, use_backup=False)
         
@@ -188,9 +194,9 @@ class TrainingRun:
             if epoch > self.config.training.epoch_limit:
                 print(f"Finished training after {epoch-1} epochs")
                 
-        self.history.save()        
-        print("Displaying graph...")
-        self.history.test.plot(curve_fit=True, asymptote=True)
+        #self.history.save()        
+        #print("Displaying graph...")
+        #self.history.test.plot(curve_fit=True, asymptote=True)
         self.close_history()
             
         
@@ -200,7 +206,7 @@ class TrainingRun:
         
 class EnsembleOfRuns:
 
-    def __init__(self, parent_dir="runs", use_existing=True, configs=['exploration.ini'], start_training=False, stub=False):
+    def __init__(self, parent_dir="runs", use_existing=True, configs=['exploration.ini'], start=False, stub=False, verbose=False):
         self.parent_dir = parent_dir
         self.config_files = configs
         self.__config = None
@@ -216,7 +222,12 @@ class EnsembleOfRuns:
                     break
         else:
             self.runs = {}
-        self.stub=stub
+        self.stub = stub or self.config.exploration.stub
+        if self.config.exploration.group_name is None:
+            self.set_config({'exploration':{'group_name':configs[-1]+"_"+hex(random.randrange(8**4))}})
+        if start:
+            self.fill_test_samples()
+            self.exploration_loop(verbose=verbose)
     
     @property
     def config(self):
@@ -236,14 +247,14 @@ class EnsembleOfRuns:
         self.active_runs.pop(run.identifier, None)
              
     
-    def generate_run(self, failure_cost=.1, active=True):
+    def generate_run(self, failure_cost=0, active=True):
         if self.seed_length is None:
             settings, seed = random_parameters_and_seed()
             self.seed_length = len(seed)
         else:
             seeds = self.seeds
             names = list(seeds)
-            losses = self.mixed_losses()
+            losses = self.mixed_log_losses()
             failures = self.failures
             sample_X = [seeds[n] for n in names]
             sample_y = [losses[n] for n in names]
@@ -268,7 +279,7 @@ class EnsembleOfRuns:
                 self.test_samples.save()
             settings = generate_parameters(seed)
             
-        settings = update(settings, {'exploration':{'seed':seed, 'inactive':not active}})    
+        settings = update(settings, {'exploration':{'seed':list(seed), 'inactive':not active}})    
         run = TrainingRun(parent_dir=self.parent_dir, settings=settings, parent_configs=self.config_files)
         self.runs[run.identifier] = run
         if active: self.active_runs[run.identifier] = run
@@ -283,13 +294,16 @@ class EnsembleOfRuns:
     def test_samples(self):
         if self.__test_samples is None:
             self.__test_samples = TrainableSampleGenerator.load(self.config.exploration.sample_file)
+        if self.__test_samples is None:
+            self.__test_samples = TrainableSampleGenerator(self.config.exploration.sample_file, configs=self.config_files, stub=self.stub)
         return self.__test_samples
         
     def fill_test_samples(self):
-        if self.test_samples is None:
-            self.__test_samples = TrainableSampleGenerator.load(self.config.exploration.sample_file)
-        if self.test_samples.num_passes < self.config.exploration.random_samples:
-            self.test_samples.sample(num_passes=self.config.exploration.random_samples)
+        #if self.test_samples is None:
+        #    self.__test_samples = TrainableSampleGenerator.load(self.config.exploration.sample_file)
+        if self.test_samples.num_passes < .5 * self.config.exploration.random_samples:
+            print("Filling test samples...")
+            self.test_samples.sample(num_passes=self.config.exploration.random_samples, verbose=True, verbose_test=True)
             self.test_samples.save()
     
     @property
@@ -299,6 +313,11 @@ class EnsembleOfRuns:
     def last_x(self, coord='time'):
         return max(max_value(run.history.test.coord(coord)) for run in self.runs.values())
     
+    def last_x_pair(self, coord='time'):
+        print(sorted(max_value(run.history.test.coord(coord)) for run in self.runs.values()))
+        for run in self.runs.values():
+            print(run.history.test.coord(coord))
+        return sorted(max_value(run.history.test.coord(coord)) for run in self.runs.values())[-2]
     
     # train a run up to 'examples' or 'time' limit
     def train_run(self, run, examples=None, time=None, retries=1):
@@ -309,34 +328,73 @@ class EnsembleOfRuns:
             'time_limit':secs_to_str(time)
         }})
         if run.examples < examples and run.time < time:
-            run.execute_run()
-            for i in range(retries):
-                if run.examples < examples and run.time < time:
-                    run.execute_run()
-                else:
-                    break
+            if self.stub:
+                run.execute_stub()
+            else:
+                run.execute_run()
+                for i in range(retries):
+                    if run.examples < examples and run.time < time:
+                        run.execute_run()
+                    else:
+                        break
                     
     def set_config(self, settings):
         parser = ConfigParser()
         parser.read([self.config_files[-1]])
         parser.read_dict(settings)
-        parser.write(self.config_files[-1])
+        with open(self.config_files[-1], 'w') as f:
+            parser.write(f)
         self.__config = None
         
     new_limit = next_training_limit
         
     # increases the current training limit, and brings all active runs
     # up to that level (or inactivates them if they suck)            
-    def training_increment(self, runs, max_time=None, max_example=None):
-        new_time, new_example = self.new_limit()
+    def training_increment(self, step=None, runs=None, max_time=None, max_example=None, verbose=True, plot=False):
+        config = self.config.exploration
+        if step is None:
+            step = config.step
+        else:
+            self.set_config({'exploration':{
+                'step':step
+            }})
+        new_time, new_example = self.new_limit(step)
+        if runs is None:
+            runs = self.active_runs.values()
         if max_time is None: max_time = new_time
         if max_example is None: max_example = new_example
         self.set_config({'exploration':{
-            'max_time':max_time,
-            'max_epoch':max_example
+            'max_time':secs_to_str(max_time),
+            'max_example':max_example
         }})
+        
+        if verbose: print(f"=== Exploration round {step} ===")
+        if verbose: print(f"max_time = {secs_to_str(max_time)}, max_example = {max_example}")
+        if verbose: print(f"Bringing up {len(runs)} active runs...")
         for run in runs:
             self.bring_up_run(run)
+            if verbose:
+                self.plot_runs(run)
+
+            
+        tries = config.try_schedule[step] if step < len(config.try_schedule) else config.try_schedule[-1]
+        if verbose: print(f"Generating {tries} new runs...")
+        for _ in range(tries):
+            run = self.generate_run()
+            self.bring_up_run(run)
+            if verbose:
+                self.plot_runs(run)
+            
+        n_active = config.active_schedule[step] if step < len(config.active_schedule) else config.active_schedule[-1]
+        self.activate_best(n=n_active)
+        
+
+    def exploration_loop(self, max_step=100000, verbose=False):
+        step = self.config.exploration.step
+        while step <= max_step:
+            self.training_increment(step=step, verbose=verbose)
+            step += 1 
+            
     
     proceed = proceed_with_training
     
@@ -354,19 +412,20 @@ class EnsembleOfRuns:
         time_steps = (config.max_time * steps).astype(int)
         
         # don't train very short runs
-        example_steps = example_steps[example_steps >= config.example_increment]
-        time_steps = time_steps[time_steps >= config.time_increment]
+        #example_steps = example_steps[example_steps >= config.example_increment]
+        #time_steps = time_steps[time_steps >= config.time_increment]
         
         
         # Step through time/example steps until current run has
         # not surpassed a step. This is the step we will start
         # training toward.
         for i in range(len(steps)):
-            if run.time < time_steps[i] or run.examples < example_steps[i]:
+            if ((run.time < time_steps[i] and run.time >= config.time_increment) or
+                (run.examples < example_steps[i] and run.examples >= config.example_increment)):
                 break
         
         for i in range(i, len(steps)):
-            self.train_run(run, time=time_steps[i], examples=time_steps[i])
+            self.train_run(run, time=time_steps[i], examples=example_steps[i])
             if not self.proceed(run):
                 self.inactivate(run)
                 break
@@ -387,10 +446,10 @@ class EnsembleOfRuns:
             if run in self.active_runs:
                 self.inactivate(run)
             
-    def plot_active_runs(self, run=None):
+    def plot_runs(self, run=None, active_only=False):
         plt.figure(figsize=(12,8))
         axes = plt.gca()
-        runs = list(self.active_runs.values())
+        runs = list(self.active_runs.values()) if active_only else list(self.runs.values())
         if run is not None:
             if run in runs:
                 runs.remove(run)
@@ -403,12 +462,9 @@ class EnsembleOfRuns:
         for r in runs:
             c = next(color)
             r.history.test.plot(axes, show=False, color=c, alpha = .5 * alpha, label = r.identifier)
-            #r.history.test.plot_curve_fit(show=False, color=c, alpha = alpha)
             
         if run is not None:
-            run.history.test.plot(axes, show=False, color='k', alpha = .5, label = run.identifier)
-            #run.history.test.plot_curve_fit(show=False, color='k', alpha = 1.)
-            #run.history.test.plot_asymptote(show=False, color='r')
+            run.history.test.plot(axes, show=False, color='k', alpha = 1, label = run.identifier)
         
         plt.legend(loc="best")
         plt.show()
@@ -444,49 +500,33 @@ class EnsembleOfRuns:
         
         plt.legend(loc="best")
         plt.show()
-     
-        
-        
-            
-        
-    # Deprecated
-    def extrapolated_losses(self, coord='time', smoothing=5, active_only=False):
-        last_x = self.last_x(coord)
+    
+    def extrapolated_log_losses(self, coord='time', smoothing=5, active_only=False, value=None):
+        runs = self.active_runs if active_only else self.runs
+        if value is None:
+            if len(runs) > 1:
+                value = self.last_x_pair(coord)
+            else:
+                value = self.last_x(coord)
         long_runs = {}
         short_runs = {}
         long_histories = set()
         losses = {}
-        runs = self.active_runs if active_only else self.runs
-        for name, run in runs.values():
-            if max_value(run.history.test.coord(coord)) == last_x:
+        for name, run in runs.items():
+            if max_value(run.history.test.coord(coord)) >= value:
                 long_runs[name] = run
-                losses[name] = run.history.test.smoothed_loss(-1, smoothing)
+                losses[name] = run.history.test.log_loss_interpolate(value, coord=coord, window=smoothing)
                 long_histories.add(run.history.test)
             else:
                 short_runs[name] = run
-        for name, run in short_runs.values():
-            losses[name] = run.history.test.loss_extrapolate(last_x, long_histories, coord, smoothing)
+        for name, run in short_runs.items():
+            losses[name], _, _, _ = run.history.test.log_loss_extrapolate(value, long_histories, coord=coord, window=smoothing)
         return losses
 
-    ######## Some deprecated methods #########    
-    # Deprecated
-    def mixed_losses(self, t_coeff=.5, transform='log', smoothing=5, active_only=False):
-        if transform=='none' or transform is None:
-            trn = lambda x : x
-            inv = lambda x : x
-        elif transform=='log':
-            trn = math.log
-            inv = math.exp
-        t_losses = self.extrapolated_losses(coord='time', smoothing=smoothing, active_only=active_only)
-        b_losses = self.extrapolated_losses(coord='example', smoothing=smoothing, active_only=active_only)
-        return {name:inv(t_coeff * trn(t_losses[name]) + trn((1-t_coeff) * b_losses[name])) for name in t_losses}
-    
-    # Deprecated
-    # asymptotes and exponential models don't work
-    def asymptotes(self, coord='example', active_only=False):
-        runs = self.active_runs if active_only else self.runs
-        return {name:run.history.test.asymptote(coord=coord) for name,run in runs.values()}
-        
+    def mixed_log_losses(self, t_coeff=.5, smoothing=5, active_only=False, t_value=None, e_value=None):
+        t_losses = self.extrapolated_log_losses(coord='time', smoothing=smoothing, active_only=active_only, value=t_value)
+        e_losses = self.extrapolated_log_losses(coord='example', smoothing=smoothing, active_only=active_only, value=e_value)
+        return {name:t_coeff * t_losses[name] + (1-t_coeff) * e_losses[name] for name in t_losses}        
             
         
         
@@ -507,18 +547,14 @@ def merge_dicts(*dicts):
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
-        parent_dir = sys.argv[1]
-        ensemble = EnsembleOfRuns(parent_dir=parent_dir)
-        if len(sys.argv) > 2:
-            run = ensemble.runs[sys.argv[2]]
-            ensemble.plot_extrapolation(run, 2500000)
-        else:  
-            ensemble.plot_active_runs()    
+        config = sys.argv[1]
+        parent_dir = os.path.dirname(config)
+        ensemble = EnsembleOfRuns(parent_dir=parent_dir, configs=[config], start=True, verbose=True)    
     else:
         settings, seed = random_parameters_and_seed()
         print("Simulating random run:")
         print(settings)
-        settings = update(settings, {'exploration':{'seed':seed}})    
+        settings = update(settings, {'exploration':{'seed':list(seed)}})    
         run = TrainingRun(settings=settings)
         run.execute_stub()
 

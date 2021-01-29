@@ -160,12 +160,6 @@ class BaseHistory:
 
     def max_epoch_example(self):
         return self.epoch[-1], self.example_in_epoch[-1]
-
-    def max_example(self):
-        return self.example[-1]
-
-    def max_time(self):
-        return self.elapsed_time[-1]
         
 
 class TrainingHistory(BaseHistory):
@@ -348,7 +342,6 @@ class TrainingHistory(BaseHistory):
 
 class TestingHistory(BaseHistory):
 
-    # training_window_size: moving average for training_loss over this many minibatches
     def __init__(self, examples_per_epoch, testing_batches, relevant_elements=None, device='cuda',
                  failed=0, number_to_symbol=None, store_residuals=False, wandb_log=None,
                  file=None, hdf5=True, load=True):
@@ -526,19 +519,33 @@ class TestingHistory(BaseHistory):
         else:
             raise ValueError("Argument 'coord' should be 'time' or 'example'")
                 
-    def log_loss_interpolate(self, x, coord='example'):
+    def log_loss_interpolate(self, x, coord='example', window=0):
         x_array = self.coord(coord)
         if x < x_array[0] or x > x_array[-1]:
-            raise ValueError(f"Requested {coord} {x} is out of bounds")
-        i = np.searchsorted(x_array, x, side='left') 
+            raise ValueError(f"Requested {coord} {x} is out of bounds")            
+        
+        i = np.searchsorted(x_array, x, side='left')
+        i0 = max(1, i-window)
+        window = i - i0            
+         
         if x_array[i] == x:
-            return np.log(self.loss[i])
+            if window <= 0:
+                return np.log(self.loss[i])
+            else:
+                return np.mean(np.log(self.loss[i0:i+1]))
+                
         x1 = x_array[i-1]
         x2 = x_array[i]
         s = (x2 - x) / (x2 - x1)
-        return s * np.log(self.loss[i-1]) + (1-s) * np.log(self.loss[i])
+        if window == 0:
+            return s * np.log(self.loss[i-1]) + (1-s) * np.log(self.loss[i])
+        else:
+            loss = np.log(self.loss[i0-1:i+1])
+            loss[0] *= s
+            loss[-1] *= (1-s)
+            return np.sum(loss) / (window+1)
 
-    def log_loss_extrapolate(self, x, histories, coord='example', decay=.25, x0=None, x1=None, log_avg=None, other_avgs=None):
+    def log_loss_extrapolate(self, x, histories, coord='example', decay=.25, x0=None, x1=None, log_avg=None, other_avgs=None, window=0):
         if self.failed or len(self.loss) == 0:
             return float("nan")
         others = [h for h in histories if h.coord(coord)[-1] >= x]
@@ -555,7 +562,7 @@ class TestingHistory(BaseHistory):
         if other_avgs is None:
             other_avgs = [h.log_average_loss(x0, x1, coord, decay) for h in others]
         
-        log_ext = log_avg - statistics.mean(other_avgs) + statistics.mean(h.log_loss_interpolate(x, coord) for h in others)
+        log_ext = log_avg - statistics.mean(other_avgs) + statistics.mean(h.log_loss_interpolate(x, coord, window=window) for h in others)
         return log_ext, log_avg, other_avgs, others
         
     def log_relative_loss(self, other, coord='example', decay=.25):
@@ -579,10 +586,6 @@ class TestingHistory(BaseHistory):
         # coords, and i1 - i0 = N,
         # d[0] will be a fraction segment
         # as will d[N]
-        #print(f"i0={i0}, i1={i1}")
-        #print(f"x0={x0}, x1={x1}")
-        #print(np.diff(x[i0:i1],prepend=x0,append=x1))
-        #print(np.exp((x[i0:i1+1] - x1)/decay))
         d = np.diff(x[i0:i1],prepend=x0,append=x1) * np.exp((x[i0:i1+1] - x1)/decay)
         
         log_avg = (np.sum(d * np.log(self.loss[i0:i1+1])) / np.sum(d)).item()

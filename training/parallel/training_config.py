@@ -14,6 +14,7 @@ from functools import partial
 
 # parses a delimited string
 def parse_list(s, separator=",", func=lambda x : x):
+    s = s.strip(" []")
     return [ func(i.strip()) for i in s.split(separator) ]
 
 title_case = lambda s : s.title()
@@ -211,7 +212,7 @@ class Config:
     # (so you can have mini configs that change just a few settings)
     # automatically includes "training.ini" as first file, unless arg specifies otherwise
     # adds command line arguments to filenames, unless arg specifies otherwise
-    def __init__(self, *filenames, settings=None, use_training_ini=True, use_command_args=True, track_sources=True, _set_names=False):
+    def __init__(self, *filenames, settings=None, use_training_ini=True, use_command_args=True, track_sources=True, _set_names=False, verbose=False):
         if _set_names: # Only here to satisfy pylint and the code highlighter
             self._set_names()
         self._parser = ConfigParser(allow_no_value=True)
@@ -225,11 +226,11 @@ class Config:
         #print(f"Loading config from files {filenames}...")
                 
         files_worked = self._parser.read(filenames)
-        print(f"Loaded config from files {files_worked}.")
+        if verbose: print(f"Loaded config from files {files_worked}.")
         
         # load any sub-configs specified in the file:
         sub_files = self._parser.read(self.get_sub_configs())
-        print(f"Loaded sub-config from files {sub_files}")        
+        if verbose: print(f"Loaded sub-config from files {sub_files}")        
 
         # load in extra caller-provided settings:
         if isinstance(settings, Mapping):
@@ -346,12 +347,16 @@ class Config:
 
         # exploration parameters
         self.load_section('exploration', eval_func=eval,
-                eval_funcs={'seed':(lambda x : np.array(eval(x))), 'time_increment':str_to_secs,
+                eval_funcs={'seed':(lambda x : np.array(eval(x))),
+                             'time_increment':str_to_secs,
                              'max_time':str_to_secs,
-                             'run_dir':str, 'sample_file':str},
+                             'run_dir':str, 'sample_file':str,
+                             'time_schedule':lambda x : parse_list(x, func=str_to_secs),
+                             'group_name':str},
                 defaults={'seed':None, 'failed':0, 'max_epoch':None, 'max_example':None, 'max_time':None,
                           'time_increment':None, 'example_increment':None, 'epoch_increment':None,
-                          'inactive':None, 'run_dir':None, 'sample_file':None})
+                          'inactive':None, 'run_dir':None, 'sample_file':"samples.torch", 'stub':False,
+                          'step':0, 'time_schedule':None, 'example_schedule':None, 'group_name':None})
         if self.exploration.max_example is None and self.exploration.max_epoch is not None:
             self.exploration.max_example = int(self.exploration.max_epoch * self.data.training_size)
         if self.exploration.example_increment is None and self.exploration.epoch_increment is not None:
@@ -439,6 +444,13 @@ class Config:
         self.exploration.run_dir = None
         self.exploration.sample_file = None
         self.exploration.random_samples = 0
+        self.exploration.try_schedule = []
+        self.exploration.active_schedule = []
+        self.exploration.time_schedule = []
+        self.exploration.example_schedule = []
+        self.exploration.step = 0
+        self.exploration.stub = False
+        self.exploration.group_name = None
         
         self.active_runs = SECTION()
         self.abandoned_runs = SECTION()
