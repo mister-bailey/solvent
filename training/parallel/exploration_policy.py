@@ -69,6 +69,9 @@ def generate_parameters(var):
     model={}
     training={}
     settings = {'model':model, 'training':training}
+    
+    # max_radius is exponential from 3 to 8
+    model['max_radius'] = 1.5 * 2 ** (1 + 1.4 * next(var))
 
     # number_of_basis is exponential from 8 to 31
     model['number_of_basis'] = int( 2 ** (3 + 2 * next(var)) )
@@ -92,20 +95,20 @@ def generate_parameters(var):
     ns = [l / numlayers for l in range(numlayers)]
     lmaxes = [int(round(l1 * n + l2 * n**2 + l3 * n**3)) for n in ns]
     bump = -min(lmaxes)
-    lmin = int(next(var) * 4)
+    lmin = int(2 ** (next(var) * 2.5)) - 1
     lmaxes = [l + bump + lmin for l in lmaxes]
     model['lmaxes'] = lmaxes
     
-    # multiplicities are a fn of both n = layer / numlayers and x = 10/(l+5)
+    # multiplicities are a fn of both n = layer / numlayers and x = 10/(l+2)
     # m = m0 + m01 x + m10 n + m11 xn
-    m11 = math.asin(2 * next(var) - 1) * 5
-    m10 = math.asin(2 * next(var) - 1) * 5
-    m01 = math.asin(2 * next(var) - 1) * 5
+    m01 = math.asin(2 * next(var) - 1) * 10
+    m10 = math.asin(2 * next(var) - 1) * 20
+    m11 = math.asin(2 * next(var) - 1) * 10
     
-    xs = [[10 / (l + 5) for l in range(lmaxes[n]+1)] for n in range(numlayers)]
+    xs = [[10 / (l + 2) for l in range(lmaxes[n]+1)] for n in range(numlayers)]
     muls = [[int(m01 * x + m10 * n + m11 * x * n) for x in xl] for n,xl in zip(ns,xs)]
     bump = -min([min(lmul) for lmul in muls])
-    mulmin = int(next(var) * 4) + 1
+    mulmin = int(2 ** (next(var) * 6))
     muls = [[m + bump + mulmin for m in lmul] for lmul in muls]
     model['muls'] = muls
 
