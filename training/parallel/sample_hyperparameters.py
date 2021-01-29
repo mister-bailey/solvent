@@ -81,7 +81,6 @@ class TrainableSampleGenerator:
                     current_passes += 1
                     if verbose: print(f"*********** {current_passes:5d}  ***********")
                     if num_passes is not None and current_passes >= num_passes:
-                        self.num_passes = current_passes
                         if save: self.save()
                         return
                 else:
