@@ -13,6 +13,7 @@ from torch.multiprocessing import Process, Lock, Semaphore, Value, Queue, Manage
 import time
 import numpy as np
 import h5py
+import pandas as pd
 import torch
 torch.set_default_dtype(torch.float64)
 
@@ -215,7 +216,7 @@ class Pipeline():
         self.command_queue.put(CloseReader())
         with self._close.get_lock():
             self._close.value = True
-        self.dataset_reader.join(2)
+        self.dataset_reader.join(4)
         self.dataset_reader.kill()
 
     # methods for DatasetReader:
@@ -329,8 +330,6 @@ class DatasetReader(Process):
         self.pipeline = pipeline
         self.config = config
 
-        self.hdf5_file_list_index = 0          # which hdf5 file
-        self.hdf5_file_index = 0               # which example within the hdf5 file
         self.all_elements = config.all_elements
         self.requested_jiggles = requested_jiggles  # how many jiggles per file
         #self.testing_molecules_dict = testing_molecules_dict   # ID -> Molecule
@@ -349,19 +348,29 @@ class DatasetReader(Process):
 
         self.data_source = config.data.source
         if self.data_source == 'hdf5':
+            self.hdf5_file_list_index = 0          # which hdf5 file
+            self.hdf5_file_index = 0               # which example within the hdf5 file
             self.hdf5_filenames = config.data.hdf5_filenames   # hdf5 files to process
             self.read_examples = self.read_examples_from_file
             if config.data.file_format == 0:
                 self.read_hdf5 = self.read_hdf5_format_0
             elif config.data.file_format == 1:
                 self.read_hdf5 = self.read_hdf5_format_1
-        elif self.data_source == 'SQL':
+        elif self.data_source.startswith('SQL'):
             self.connect_params = config.data.connect_params
             self.SQL_fetch_size = config.data.SQL_fetch_size
-            self.molecule_buffer = []
-            self.read_examples = self.read_examples_from_SQL
-            from mysql_df import MysqlDB
-            self.database = MysqlDB(self.connect_params)
+            if self.data_source == 'SQL_0':
+                self.empty_buffer = []
+                self.read_examples = self.read_examples_from_SQL_0
+                from mysql_df import MysqlDB
+                self.database = MysqlDB(self.connect_params)
+            else:
+                from sql_df import Database
+                self.empty_buffer = pd.DataFrame(columns=['atomic_numbers', 'geometries_and_shieldings', 'compound_type', 'weights'])
+                self.molecule_buffer = self.empty_buffer.copy()
+                self.read_examples = self.read_examples_from_SQL_1
+                self.database = Database(**self.connect_params)
+            self.molecule_buffer = self.empty_buffer.copy()
 
     # command loop for reader:
     def run(self):
@@ -386,7 +395,7 @@ class DatasetReader(Process):
                         self.pipeline.set_finished_reading()
                 elif self.data_source == 'SQL':
                     self.index_pos = command.index
-                    self.molecule_buffer = []
+                    self.molecule_buffer = self.empty_buffer.copy()
                 #self.molecule_number = 0
             elif isinstance(command, StartReading):
                 self.molecule_pipeline.notify_starting(command.batch_size)
@@ -467,7 +476,7 @@ class DatasetReader(Process):
                     self.hdf5_file_index += examples_to_read
                     return examples_to_read
 
-    def read_examples_from_SQL(self, examples_to_read, make_molecules):
+    def read_examples_from_SQL_0(self, examples_to_read, make_molecules):
         examples_read = 0
         while examples_read < examples_to_read:
             i=0
@@ -494,17 +503,71 @@ class DatasetReader(Process):
             if len(self.molecule_buffer) < self.SQL_fetch_size and self.index_pos < len(self.indices):
                 self.molecule_buffer += self.database.read_rows(np.nditer(
                     self.indices[self.index_pos : self.index_pos + self.SQL_fetch_size]),
-                    randomize = self.shuffle_incoming, get_tensors=self.use_tensor_constraint)
+                    randomize = self.shuffle_incoming) #, get_tensors=self.use_tensor_constraint)
+                self.index_pos += self.SQL_fetch_size
+
+        return examples_read
+    
+    # Molecule(
+    #             ID, smiles,
+    #             perturbed_geometries,
+    #             perturbed_shieldings,
+    #             atomic_numbers,
+    #             symmetrical_atoms=None,
+    #             weights=None
+    
+    def read_examples_from_SQL_1(self, examples_to_read, make_molecules=True):
+        examples_read = 0
+        while examples_read < examples_to_read:
+            # iterate through molecule_buffer, which in this case is a pandas dataframe
+            i = 0
+            for i, (ID, row) in enumerate(self.molecule_buffer.iterrows()):
+                if examples_read == examples_to_read:
+                    break
+                
+                # encapsulate these data into a Molecule object and send to the C++ preprocessing pipeline
+                molecule = Molecule(ID, None,
+                                row.geometries_and_shieldings[..., :3],
+                                row.geometries_and_shieldings[..., 3],
+                                row.atomic_numbers, weights=row.weights)
+                self.pipeline.put_molecule_to_ext(molecule)
+                examples_read += 1
+                
+                # ABORT if we are exiting training
+                if self.pipeline.time_to_close():
+                    return examples_to_read
+                 
+                # this loop does double duty of also grabbing any finished batches from the C++ pipeline
+                # and sending them for training:   
+                while self.pipeline.ext_batch_ready():
+                    batch = self.pipeline.get_batch_from_ext()
+                    self.pipeline.put_batch(batch)
+                    
+              
+            self.molecule_buffer = self.molecule_buffer.iloc[i:]
+            
+            # if molecule buffer is running low (and we're not at the end of the train/test set)...
+            if len(self.molecule_buffer) < self.SQL_fetch_size and self.index_pos < len(self.indices):
+                # fetch from database and concatenate to molecule_buffer
+                self.molecule_buffer = pd.concat([self.molecule_buffer,
+                    self.database.read_rows(
+                    self.indices[self.index_pos : self.index_pos + self.SQL_fetch_size],
+                    randomize = self.shuffle_incoming)])
                 self.index_pos += self.SQL_fetch_size
 
         return examples_read
 
 
 # returns a random shuffle of the available indices, for test/train split and random training
-def generate_index_shuffle(size, connect_params, rng=None, seed=None, randomize=True, get_from_start=False):
-    from mysql_df import MysqlDB
-    db = MysqlDB(connect_params)
-    indices = np.array(db.get_finished_idxs(size, ordered=get_from_start), dtype=np.int32)
+def generate_index_shuffle(size, connect_params, rng=None, seed=None, randomize=True, status=0, get_from_start=False, sql_version=1):
+    if sql_version == 0:
+        from mysql_df import MysqlDB
+        db = MysqlDB(connect_params)
+        indices = np.array(db.get_finished_idxs(size, ordered=get_from_start), dtype=np.int32)
+    elif sql_version == 1:
+        from sql_df import Database
+        db = Database(**connect_params, status=status)
+        indices = np.array(db.fetch_ids(size, status))
     if randomize:
         if rng is None:
             rng = np.random.default_rng(seed)

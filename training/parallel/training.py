@@ -246,10 +246,12 @@ def main():
                 f"Generating new test/train shuffle from {testing_size + training_size} examples... ", end="")
         else:
             print("Using non-randomized (in-order) test/train indices")
+            raise Exception("Really? I doubt it.")
         if not config.data.multi_jiggle_data:  # usual database of distinct molecules
             test_train_shuffle = generate_index_shuffle(
                 testing_size + training_size, config.data.connect_params, randomize=config.data.randomize)
         else:  # select on smiles string to get specified number of jiggle
+            raise ValueError("We haven't implemented multi-jiggle training yet.")
             test_train_shuffle = generate_multi_jiggles_set(
                 math.ceil((testing_size + training_size) /
                           config.data.jiggles_per_molecule),  # of molecules

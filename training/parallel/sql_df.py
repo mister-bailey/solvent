@@ -90,13 +90,13 @@ class Database:
     @connect
     def read_rows(self, ids, columns=['id', 'atomic_numbers', 'geometries_and_shieldings', 'compound_type', 'weights'], randomize=False):
         query = sqa.select((getattr(self.data_table.columns, c) for c in columns))
-        if isinstance(ids, np.ndarray):
+        if hasattr(ids, 'tolist'):
             ids = ids.tolist()
         query = query.where(self.data_table.columns.id.in_(ids))
         if randomize:
             query = query.order_by(func.rand())
         
-        query_df = pd.read_sql_query(query, self.engine)
+        query_df = pd.read_sql_query(query, self.engine, index_col="id")
         self.__exit__(None, None, None)
         
         # convert back to the array types
@@ -119,6 +119,11 @@ if __name__ == '__main__':
     
     print(data)
     
+    for id, row in data.iterrows():
+        print(id, row)
+
+    
+
 
     
         
